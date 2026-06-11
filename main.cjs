@@ -7,6 +7,7 @@ const os = require('os')
 const { exec } = require('child_process')
 const { createClient } = require('@supabase/supabase-js')
 const { SerialPort } = require('serialport')
+const iconv = require('iconv-lite')
 
 const baseDir = app.getPath('userData')
 const configPath = path.join(baseDir, 'config.json')
@@ -21,8 +22,31 @@ let stopPrinterLoop = false
 
 const ESC = {
     init: '\x1B\x40',
+
+    alignLeft: '\x1B\x61\x00',
+    alignCenter: '\x1B\x61\x01',
+
+    fontA: '\x1B\x4D\x00',
+    fontB: '\x1B\x4D\x01',
+
     boldOn: '\x1B\x45\x01',
     boldOff: '\x1B\x45\x00',
+
+    normalSize: '\x1D\x21\x00',
+    doubleHeight: '\x1D\x21\x01',
+    doubleWidth: '\x1D\x21\x10',
+    doubleSize: '\x1D\x21\x11',
+
+    underlineOff: '\x1B\x2D\x00',
+
+    // Espaçamento entre letras normal
+    charSpacingNormal: '\x1B\x20\x00',
+
+    // Tenta deixar impressão mais forte em várias ESC/POS
+    densityStrong1: '\x1D\x28\x45\x04\x00\x05\x05\x05\x05',
+    densityStrong2: '\x12\x23\x07',
+
+    feed: '\n',
     cut: '\x1D\x56\x41\x10',
 }
 
@@ -110,6 +134,19 @@ function listWindowsPrinters() {
     })
 }
 
+function normalizePrinterText(text) {
+    return String(text || "")
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/ç/g, "c")
+        .replace(/Ç/g, "C")
+        .replace(/[“”]/g, '"')
+        .replace(/[‘’]/g, "'")
+        .replace(/[–—]/g, "-")
+        .replace(/º/g, "o")
+        .replace(/ª/g, "a")
+}
+
 async function detectPrinters() {
     const comPorts = await listComPorts()
     const windowsPrinters = await listWindowsPrinters()
@@ -121,17 +158,18 @@ async function detectPrinters() {
 }
 
 function printRaw(text, config) {
+    const cleanText = normalizePrinterText(text)
     const mode = String(config.PRINTER_MODE || 'ethernet').toLowerCase()
 
     if (mode === 'usb') {
-        return printUsb(text, config)
+        return printUsb(cleanText, config)
     }
 
     if (mode === 'bluetooth') {
-        return printBluetooth(text, config)
+        return printBluetooth(cleanText, config)
     }
 
-    return printEthernet(text, config)
+    return printEthernet(cleanText, config)
 }
 
 function printUsb(text, config) {
@@ -193,7 +231,7 @@ function printEthernet(text, config) {
         })
 
         socket.connect(Number(config.PRINTER_PORT), config.PRINTER_IP, () => {
-            socket.write(Buffer.from(text, 'binary'), err => {
+            socket.write(iconv.encode(text, 'cp850'), err => {
                 if (err) {
                     socket.destroy()
                     reject(err)
@@ -226,7 +264,7 @@ function printBluetooth(text, config) {
                 return
             }
 
-            port.write(Buffer.from(text, 'binary'), err => {
+            port.write(iconv.encode(text, 'cp850'), err => {
                 if (err) {
                     port.close(() => {})
                     reject(err)
@@ -264,6 +302,20 @@ async function updateJob(supabase, id, patch) {
         .eq('id', id)
 
     if (error) throw error
+}
+
+function printerStart() {
+    return [
+        ESC.init,
+        ESC.alignLeft,
+        ESC.fontA,
+        ESC.normalSize,
+        ESC.boldOff,
+        ESC.underlineOff,
+        ESC.charSpacingNormal,
+        ESC.densityStrong1,
+        ESC.densityStrong2,
+    ].join('')
 }
 
 async function buildReceipt(supabase, orderId) {
@@ -315,9 +367,12 @@ async function buildReceipt(supabase, orderId) {
         subMap[s.order_item_id].push(s)
     })
 
-    let txt = ESC.init
+    let txt = printerStart()
 
-    txt += ESC.boldOn + 'COZINHA\n' + ESC.boldOff
+    txt += ESC.alignCenter
+    txt += ESC.boldOn + ESC.doubleSize + 'COZINHA\n' + ESC.normalSize + ESC.boldOff
+    txt += ESC.alignLeft
+    txt += '----------------------------------------\n'
 
     txt += `Pedido: ${order.display_id}\n`
     txt += `Hora: ${new Date(order.created_at).toLocaleString('pt-BR')}\n`
