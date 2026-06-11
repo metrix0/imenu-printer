@@ -1,0 +1,8 @@
+{
+  "RESTAURANT_ID": "...",
+  "RESTAURANT_NAME": "...",
+  "LOGGED_IN_EMAIL": "...",
+  "PRINTER_MODE": "bluetooth",
+  "PRINTER_COM_PORT": "COM5",
+  "PRINTER_BAUD_RATE": 9600
+}

@@ -1,0 +1,50 @@
+{
+  "name": "imenu-printer-app",
+  "version": "1.0.0",
+  "description": "iMenu Impressora",
+  "author": "iMenu",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron imenu-printer",
+    "dist": "electron-builder --win nsis"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.0.0",
+    "iconv-lite": "^0.7.2",
+    "serialport": "^13.0.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.imenu.impressora",
+    "productName": "iMenu Impressora",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "index.html",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "node_modules/serialport/**/*",
+      "node_modules/@serialport/**/*",
+      "node_modules/node-gyp-build/**/*"
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "iMenu Impressora"
+    }
+  }
+}

@@ -1,0 +1,810 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <title>iMenu Impressora</title>
+
+    <style>
+        :root {
+            --brand: #f14400;
+            --brand-dark: #c73700;
+            --brand-soft: #fff1eb;
+            --brand-border: #ffd5c4;
+
+            --text: #111827;
+            --muted: #6b7280;
+            --border: #e5e7eb;
+            --bg: #f9fafb;
+            --card: #ffffff;
+
+            --red: #dc2626;
+            --red-soft: #fef2f2;
+            --red-border: #fecaca;
+
+            --green: #16a34a;
+            --green-soft: #f0fdf4;
+            --green-border: #bbf7d0;
+        }
+
+        .topbar {
+            justify-content: center;
+            text-align: center;
+        }
+
+        .brand {
+            align-items: center;
+            text-align: center;
+        }
+
+        .brandTitle {
+            text-align: center;
+        }
+
+        .iconTitle {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+        }
+
+        .iconBadge {
+            width: 34px;
+            height: 34px;
+            border-radius: 10px;
+            display: none;
+            background: var(--brand-soft);
+            color: var(--brand);
+            border: 1px solid var(--brand-border);
+            align-items: center;
+            justify-content: center;
+            font-size: 17px;
+            flex-shrink: 0;
+        }
+
+        button.soft {
+            background: var(--brand-soft);
+            color: var(--brand);
+            border: 1px solid var(--brand-border);
+        }
+
+        button.soft:hover {
+            background: #ffe2d6;
+        }
+
+        button.save {
+            background: var(--brand);
+            color: white;
+        }
+
+        button.save:hover {
+            background: var(--brand-dark);
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+        }
+
+        .page {
+            width: 100%;
+            max-width: 920px;
+            margin: 0 auto;
+            padding: 32px 24px 40px;
+        }
+
+        .topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 28px;
+        }
+
+        .brand {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .brandTitle {
+            font-size: 30px;
+            font-weight: 800;
+            letter-spacing: -0.04em;
+            color: var(--brand);
+            margin: 0;
+        }
+
+        .brandSubtitle {
+            color: var(--muted);
+            font-size: 14px;
+            margin: 0;
+        }
+
+        .layout {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 18px;
+        }
+
+        .card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            padding: 22px;
+            box-shadow: 0 8px 26px rgba(15, 23, 42, 0.06);
+        }
+
+        .cardHeader {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            margin-bottom: 18px;
+        }
+
+        .cardTitle {
+            font-size: 22px;
+            font-weight: 800;
+            letter-spacing: -0.03em;
+            margin: 0;
+            color: var(--text);
+        }
+
+        .cardDescription {
+            font-size: 14px;
+            color: var(--muted);
+            margin: 6px 0 0;
+            line-height: 1.45;
+        }
+
+        label {
+            display: block;
+            font-size: 13px;
+            margin-bottom: 6px;
+            font-weight: 700;
+            color: #374151;
+        }
+
+        input, select {
+            width: 100%;
+            padding: 11px 12px;
+            border-radius: 10px;
+            border: 1px solid #d1d5db;
+            background: white;
+            color: var(--text);
+            font-size: 14px;
+            outline: none;
+        }
+
+        input:focus, select:focus {
+            border-color: var(--brand);
+            box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12);
+        }
+
+        .field {
+            margin-top: 14px;
+        }
+
+        .grid2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 14px;
+        }
+
+        button {
+            border: 0;
+            border-radius: 10px;
+            padding: 11px 15px;
+            background: var(--brand);
+            color: white;
+            font-weight: 700;
+            cursor: pointer;
+            font-size: 14px;
+            transition: 120ms ease;
+        }
+
+        button:hover {
+            background: var(--brand-dark);
+        }
+
+        button.secondary {
+            background: #111827;
+        }
+
+        button.secondary:hover {
+            background: #374151;
+        }
+
+        button.ghost {
+            background: #f3f4f6;
+            color: #374151;
+        }
+
+        button.ghost:hover {
+            background: #e5e7eb;
+        }
+
+        button.danger {
+            background: #fee2e2;
+            color: #b91c1c;
+        }
+
+        button.danger:hover {
+            background: #fecaca;
+        }
+
+        .buttonRow {
+            display: flex;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 18px;
+        }
+
+        .hidden {
+            display: none !important;
+        }
+
+        .loginWrap {
+            max-width: 460px;
+            margin: 80px auto 0;
+        }
+
+        .loginLogo {
+            text-align: center;
+            margin-bottom: 22px;
+        }
+
+        .loginLogo h1 {
+            font-size: 36px;
+            color: var(--brand);
+            font-weight: 800;
+            margin: 0;
+            letter-spacing: -0.05em;
+        }
+
+        .loginLogo p {
+            color: var(--muted);
+            margin: 8px 0 0;
+            font-size: 15px;
+        }
+
+        .error {
+            color: #b91c1c;
+            background: #fef2f2;
+            border: 1px solid #fecaca;
+            padding: 10px 12px;
+            border-radius: 10px;
+            font-size: 14px;
+            margin-top: 14px;
+        }
+
+        .error:empty {
+            display: none;
+        }
+
+        .restaurantBox {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            padding: 14px;
+            background: #f9fafb;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+        }
+
+        .restaurantName {
+            font-weight: 800;
+            color: var(--text);
+            margin: 0;
+        }
+
+        .restaurantEmail {
+            color: var(--muted);
+            font-size: 13px;
+            margin: 4px 0 0;
+        }
+
+        .statusBox {
+            width: 100%;
+            padding: 13px 14px;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 800;
+            letter-spacing: 0.02em;
+            margin-bottom: 18px;
+            border: 1px solid;
+        }
+
+        .statusBox.active {
+            color: #166534;
+            background: var(--green-soft);
+            border-color: var(--green-border);
+        }
+
+        .statusBox.inactive {
+            color: #b91c1c;
+            background: var(--red-soft);
+            border-color: var(--red-border);
+        }
+
+        .logsBox {
+            background: #111827;
+            color: #86efac;
+            padding: 14px;
+            border-radius: 14px;
+            height: 190px;
+            overflow: auto;
+            font-family: Consolas, monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            white-space: pre-wrap;
+        }
+
+        .connectionHelp {
+            color: var(--muted);
+            font-size: 13px;
+            margin-top: 8px;
+            line-height: 1.45;
+        }
+
+        @media (max-width: 720px) {
+            .page {
+                padding: 24px 16px 34px;
+            }
+
+            .topbar {
+                align-items: flex-start;
+                flex-direction: column;
+                gap: 12px;
+            }
+
+            .grid2 {
+                grid-template-columns: 1fr;
+            }
+
+            .card {
+                padding: 18px;
+                border-radius: 16px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+<div class="page">
+    <div id="loginScreen" class="loginWrap">
+        <div class="loginLogo">
+            <h1>iMenu</h1>
+            <p>Conecte a impressora do restaurante</p>
+        </div>
+
+        <div class="card">
+            <div class="cardHeader">
+                <div class="iconTitle">
+                    <div class="iconBadge">👤</div>
+                    <div>
+                        <h2 class="cardTitle">Entrar</h2>
+                        <p class="cardDescription">Acesse com o login do restaurante.</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="field">
+                <label>Email</label>
+                <input id="email" type="email" autocomplete="email" />
+            </div>
+
+            <div class="field">
+                <label>Senha</label>
+                <input id="password" type="password" autocomplete="current-password" />
+            </div>
+
+            <div class="buttonRow">
+                <button onclick="login()">Entrar</button>
+            </div>
+
+            <p class="error" id="loginStatus"></p>
+        </div>
+    </div>
+
+    <div id="appScreen" class="hidden">
+        <div class="topbar">
+            <div class="brand">
+                <h1 class="brandTitle">iMenu Impressora</h1>
+                <p class="brandSubtitle">Impressão automática dos pedidos</p>
+            </div>
+        </div>
+
+        <div class="layout">
+            <div class="card">
+                <div class="cardHeader">
+                    <div class="iconTitle">
+                        <div class="iconBadge">🍽️</div>
+                        <div>
+                            <h2 class="cardTitle">Restaurante</h2>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="restaurantBox">
+                    <div>
+                        <p class="restaurantName" id="restaurantName">Restaurante</p>
+                        <p class="restaurantEmail" id="restaurantEmail"></p>
+                    </div>
+
+                    <button class="danger" onclick="logout()">Sair</button>
+                </div>
+            </div>
+
+            <div class="card">
+                <div id="printerStatus" class="statusBox inactive">
+                    IMPRESSORA INATIVA E NÃO CONFIGURADA
+                </div>
+
+                <div class="cardHeader">
+                    <div class="iconTitle">
+                        <div class="iconBadge">🖨️</div>
+                        <div>
+                            <h2 class="cardTitle">Impressora</h2>
+                            <p class="cardDescription">Escolha a impressora dos pedidos.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="buttonRow" style="margin-top: 0; margin-bottom: 16px;">
+                    <button class="soft" onclick="detectPrinters()"> Detectar impressoras</button>
+                    <button class="soft" onclick="testPrinter()">Teste de impressão</button>
+                    <button class="save" onclick="saveConfig()">Salvar</button>
+                </div>
+
+                <div class="field">
+                    <label>Tipo de conexão</label>
+                    <select id="PRINTER_MODE" onchange="updateModeVisibility(); saveConfig(); updatePrinterStatus();">
+                        <option value="bluetooth">Bluetooth</option>
+                        <option value="usb">USB</option>
+                        <option value="ethernet">Rede / Wi-Fi</option>
+                    </select>
+                </div>
+
+                <div id="bluetoothFields">
+                    <div class="field">
+                        <label>Impressora Bluetooth</label>
+                        <select id="PRINTER_COM_PORT" onchange="saveConfig(); updatePrinterStatus();"></select>
+                        <p class="connectionHelp">Selecione a porta COM da impressora pareada no Windows.</p>
+                    </div>
+                </div>
+
+                <div id="usbFields">
+                    <div class="field">
+                        <label>Impressora USB</label>
+                        <select id="PRINTER_NAME" onchange="saveConfig(); updatePrinterStatus();"></select>
+                    </div>
+                </div>
+
+                <div id="ethernetFields">
+                    <div class="grid2">
+                        <div class="field">
+                            <label>IP da impressora</label>
+                            <input id="PRINTER_IP" placeholder="192.168.0.50" onchange="saveConfig(); updatePrinterStatus();" />
+                        </div>
+
+                        <div class="field">
+                            <label>Porta</label>
+                            <input id="PRINTER_PORT" type="number" placeholder="9100" onchange="saveConfig(); updatePrinterStatus();" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="cardHeader">
+                    <div class="iconTitle">
+                        <div class="iconBadge">📋</div>
+                        <div>
+                            <h2 class="cardTitle">Registros</h2>
+                            <p class="cardDescription">Últimas ações da impressora.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="logs" class="logsBox"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const fields = [
+        'PRINTER_MODE',
+        'PRINTER_COM_PORT',
+        'PRINTER_NAME',
+        'PRINTER_IP',
+        'PRINTER_PORT',
+    ]
+
+    let currentConfig = {}
+
+    function log(message) {
+        const logs = document.getElementById('logs')
+        if (!logs) return
+
+        logs.textContent += message + '\n'
+        logs.scrollTop = logs.scrollHeight
+    }
+
+    function normalizeErrorMessage(err) {
+        const raw = String(err?.message || err || '').toLowerCase()
+
+        if (
+            raw.includes('invalid login credentials') ||
+            raw.includes('invalid credentials') ||
+            raw.includes('email not confirmed') ||
+            raw.includes('auth') ||
+            raw.includes('password')
+        ) {
+            return 'Email ou senha inválidos.'
+        }
+
+        if (
+            raw.includes('failed to fetch') ||
+            raw.includes('network') ||
+            raw.includes('fetch')
+        ) {
+            return 'Erro de conexão. Verifique a internet e tente novamente.'
+        }
+
+        if (
+            raw.includes('restaurant') ||
+            raw.includes('restaurants') ||
+            raw.includes('no rows') ||
+            raw.includes('single')
+        ) {
+            return 'Nenhum restaurante encontrado para este login.'
+        }
+
+        return 'Erro ao entrar. Tente novamente.'
+    }
+
+    function showLogin() {
+        document.getElementById('loginScreen').classList.remove('hidden')
+        document.getElementById('appScreen').classList.add('hidden')
+    }
+
+    function showApp(config) {
+        document.getElementById('loginScreen').classList.add('hidden')
+        document.getElementById('appScreen').classList.remove('hidden')
+
+        document.getElementById('restaurantName').textContent =
+            config.RESTAURANT_NAME || 'Restaurante conectado'
+
+        document.getElementById('restaurantEmail').textContent =
+            config.LOGGED_IN_EMAIL || ''
+
+        updatePrinterStatus()
+    }
+
+    function isPrinterConfigured() {
+        const mode = document.getElementById('PRINTER_MODE').value
+
+        if (mode === 'bluetooth') {
+            return Boolean(document.getElementById('PRINTER_COM_PORT').value)
+        }
+
+        if (mode === 'usb') {
+            return Boolean(document.getElementById('PRINTER_NAME').value)
+        }
+
+        if (mode === 'ethernet') {
+            return Boolean(
+                document.getElementById('PRINTER_IP').value &&
+                document.getElementById('PRINTER_PORT').value
+            )
+        }
+
+        return false
+    }
+
+    function updatePrinterStatus() {
+        const status = document.getElementById('printerStatus')
+        if (!status) return
+
+        if (isPrinterConfigured()) {
+            status.textContent = 'IMPRESSORA ATIVA E CONFIGURADA'
+            status.classList.remove('inactive')
+            status.classList.add('active')
+        } else {
+            status.textContent = 'IMPRESSORA INATIVA E NÃO CONFIGURADA'
+            status.classList.remove('active')
+            status.classList.add('inactive')
+        }
+    }
+
+    function getFormConfig() {
+        const config = {}
+
+        for (const field of fields) {
+            const el = document.getElementById(field)
+            if (!el) continue
+
+            config[field] = el.value
+        }
+
+        config.PRINTER_BAUD_RATE = 9600
+        config.PRINTER_PORT = Number(config.PRINTER_PORT || 9100)
+        config.POLL_EVERY_MS = 7000
+        config.CONNECT_TIMEOUT_MS = 5000
+
+        return config
+    }
+
+    function setFormConfig(config) {
+        currentConfig = config
+
+        for (const field of fields) {
+            const el = document.getElementById(field)
+            if (!el) continue
+
+            if (config[field] !== undefined && config[field] !== null) {
+                el.value = config[field]
+            }
+        }
+
+        updateModeVisibility()
+        updatePrinterStatus()
+    }
+
+    function updateModeVisibility() {
+        const mode = document.getElementById('PRINTER_MODE').value
+
+        document.getElementById('bluetoothFields').style.display =
+            mode === 'bluetooth' ? 'block' : 'none'
+
+        document.getElementById('usbFields').style.display =
+            mode === 'usb' ? 'block' : 'none'
+
+        document.getElementById('ethernetFields').style.display =
+            mode === 'ethernet' ? 'block' : 'none'
+    }
+
+    async function detectPrinters() {
+        try {
+            const result = await window.api.detectPrinters()
+
+            const comSelect = document.getElementById('PRINTER_COM_PORT')
+            const currentCom = comSelect.value
+            comSelect.innerHTML = ''
+
+            for (const port of result.comPorts) {
+                const opt = document.createElement('option')
+                opt.value = port.path
+                opt.textContent = `${port.path} ${port.friendlyName || port.manufacturer || ''}`
+                comSelect.appendChild(opt)
+            }
+
+            if (currentCom) {
+                comSelect.value = currentCom
+            }
+
+            const printerSelect = document.getElementById('PRINTER_NAME')
+            const currentPrinter = printerSelect.value
+            printerSelect.innerHTML = ''
+
+            for (const printer of result.windowsPrinters) {
+                const opt = document.createElement('option')
+                opt.value = printer.name
+                opt.textContent = printer.name
+                printerSelect.appendChild(opt)
+            }
+
+            if (currentPrinter) {
+                printerSelect.value = currentPrinter
+            }
+
+            await saveConfig()
+            updatePrinterStatus()
+
+            log('Impressoras detectadas.')
+        } catch (err) {
+            log('Erro ao detectar impressoras.')
+        }
+    }
+
+    async function saveConfig() {
+        const printerConfig = getFormConfig()
+
+        await window.api.saveConfig(printerConfig)
+
+        currentConfig = {
+            ...currentConfig,
+            ...printerConfig,
+        }
+
+        updatePrinterStatus()
+        log('Configuração salva.')
+    }
+
+    async function testPrinter() {
+        try {
+            await saveConfig()
+
+            const printerConfig = getFormConfig()
+
+            await window.api.testPrinter(printerConfig)
+
+            log('Teste enviado para impressora.')
+        } catch (err) {
+            log('Erro no teste de impressão.')
+        }
+    }
+
+    async function login() {
+        try {
+            const email = document.getElementById('email').value.trim()
+            const password = document.getElementById('password').value
+
+            document.getElementById('loginStatus').textContent = ''
+
+            if (!email || !password) {
+                document.getElementById('loginStatus').textContent = 'Preencha email e senha.'
+                return
+            }
+
+            const result = await window.api.login({
+                email,
+                password,
+            })
+
+            const config = await window.api.getConfig()
+
+            setFormConfig(config)
+            showApp(config)
+            await detectPrinters()
+
+            log(`Login OK. Restaurante: ${result.restaurant_name || result.restaurant_id}`)
+        } catch (err) {
+            document.getElementById('loginStatus').textContent = normalizeErrorMessage(err)
+        }
+    }
+
+    async function logout() {
+        await window.api.logout()
+        showLogin()
+    }
+
+    window.api.onLog(log)
+
+    async function init() {
+        const config = await window.api.getConfig()
+
+        setFormConfig(config)
+
+        if (config.RESTAURANT_ID) {
+            showApp(config)
+            await detectPrinters()
+        } else {
+            showLogin()
+        }
+    }
+    document.getElementById('email').addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') {
+            login()
+        }
+    })
+
+    document.getElementById('password').addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') {
+            login()
+        }
+    })
+
+    init()
+</script>
+</body>
+</html>
