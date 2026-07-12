@@ -7,7 +7,6 @@ const os = require('os')
 const { exec } = require('child_process')
 const { createClient } = require('@supabase/supabase-js')
 const { SerialPort } = require('serialport')
-const iconv = require('iconv-lite')
 
 const baseDir = app.getPath('userData')
 const configPath = path.join(baseDir, 'config.json')
@@ -22,31 +21,8 @@ let stopPrinterLoop = false
 
 const ESC = {
     init: '\x1B\x40',
-
-    alignLeft: '\x1B\x61\x00',
-    alignCenter: '\x1B\x61\x01',
-
-    fontA: '\x1B\x4D\x00',
-    fontB: '\x1B\x4D\x01',
-
     boldOn: '\x1B\x45\x01',
     boldOff: '\x1B\x45\x00',
-
-    normalSize: '\x1D\x21\x00',
-    doubleHeight: '\x1D\x21\x01',
-    doubleWidth: '\x1D\x21\x10',
-    doubleSize: '\x1D\x21\x11',
-
-    underlineOff: '\x1B\x2D\x00',
-
-    // Espaçamento entre letras normal
-    charSpacingNormal: '\x1B\x20\x00',
-
-    // Tenta deixar impressão mais forte em várias ESC/POS
-    densityStrong1: '\x1D\x28\x45\x04\x00\x05\x05\x05\x05',
-    densityStrong2: '\x12\x23\x07',
-
-    feed: '\n',
     cut: '\x1D\x56\x41\x10',
 }
 
@@ -60,26 +36,32 @@ function sendLog(message) {
 }
 
 function readConfig() {
-    if (!fs.existsSync(configPath)) {
-        return {
-            RESTAURANT_ID: '',
-            RESTAURANT_NAME: '',
-            LOGGED_IN_EMAIL: '',
+    const defaults = {
+        RESTAURANT_ID: '',
+        RESTAURANT_NAME: '',
+        LOGGED_IN_EMAIL: '',
 
-            PRINTER_MODE: 'bluetooth',
-            PRINTER_COM_PORT: '',
-            PRINTER_BAUD_RATE: 9600,
+        PRINTER_MODE: 'bluetooth',
+        PRINTER_COM_PORT: '',
+        PRINTER_BAUD_RATE: 9600,
 
-            PRINTER_NAME: '',
-            PRINTER_IP: '',
-            PRINTER_PORT: 9100,
+        PRINTER_NAME: '',
+        PRINTER_IP: '',
+        PRINTER_PORT: 9100,
+        PRINT_TWO_COPIES: false,
 
-            POLL_EVERY_MS: 7000,
-            CONNECT_TIMEOUT_MS: 5000,
-        }
+        POLL_EVERY_MS: 7000,
+        CONNECT_TIMEOUT_MS: 5000,
     }
 
-    return JSON.parse(fs.readFileSync(configPath, 'utf8'))
+    if (!fs.existsSync(configPath)) {
+        return defaults
+    }
+
+    return {
+        ...defaults,
+        ...JSON.parse(fs.readFileSync(configPath, 'utf8')),
+    }
 }
 function saveConfig(config) {
     fs.mkdirSync(baseDir, { recursive: true })
@@ -134,19 +116,6 @@ function listWindowsPrinters() {
     })
 }
 
-function normalizePrinterText(text) {
-    return String(text || "")
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/ç/g, "c")
-        .replace(/Ç/g, "C")
-        .replace(/[“”]/g, '"')
-        .replace(/[‘’]/g, "'")
-        .replace(/[–—]/g, "-")
-        .replace(/º/g, "o")
-        .replace(/ª/g, "a")
-}
-
 async function detectPrinters() {
     const comPorts = await listComPorts()
     const windowsPrinters = await listWindowsPrinters()
@@ -158,18 +127,33 @@ async function detectPrinters() {
 }
 
 function printRaw(text, config) {
-    const cleanText = normalizePrinterText(text)
     const mode = String(config.PRINTER_MODE || 'ethernet').toLowerCase()
 
     if (mode === 'usb') {
-        return printUsb(cleanText, config)
+        return printUsb(text, config)
     }
 
     if (mode === 'bluetooth') {
-        return printBluetooth(cleanText, config)
+        return printBluetooth(text, config)
     }
 
-    return printEthernet(cleanText, config)
+    return printEthernet(text, config)
+}
+
+function getPrintCopies(config) {
+    return config.PRINT_TWO_COPIES === true ? 2 : 1
+}
+
+async function printConfiguredCopies(text, config) {
+    const copies = getPrintCopies(config)
+
+    for (let copy = 1; copy <= copies; copy += 1) {
+        await printRaw(text, config)
+
+        if (copy < copies) {
+            await sleep(300)
+        }
+    }
 }
 
 function printUsb(text, config) {
@@ -179,109 +163,23 @@ function printUsb(text, config) {
             return
         }
 
-        const bytes = iconv.encode(text, 'cp850')
-        const filePath = path.join(os.tmpdir(), `imenu_raw_print_${Date.now()}.bin`)
-        fs.writeFileSync(filePath, bytes)
+        const safeText = text
+            .replaceAll(ESC.init, '')
+            .replaceAll(ESC.boldOn, '')
+            .replaceAll(ESC.boldOff, '')
+            .replaceAll(ESC.cut, '')
 
-        const printerName = String(config.PRINTER_NAME).replaceAll("'", "''")
+        const filePath = path.join(os.tmpdir(), `imenu_print_${Date.now()}.txt`)
+        fs.writeFileSync(filePath, safeText, 'utf8')
+
+        const safePrinterName = config.PRINTER_NAME.replaceAll("'", "''")
         const safeFilePath = filePath.replaceAll("'", "''")
 
-        const ps = `
-$printerName = '${printerName}'
-$filePath = '${safeFilePath}'
+        const cmd = `powershell -NoProfile -Command "Get-Content -Raw '${safeFilePath}' | Out-Printer -Name '${safePrinterName}'"`
 
-Add-Type -TypeDefinition @"
-using System;
-using System.IO;
-using System.Runtime.InteropServices;
-
-public class RawPrinterHelper
-{
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Ansi)]
-    public class DOCINFOA
-    {
-        [MarshalAs(UnmanagedType.LPStr)]
-        public string pDocName;
-        [MarshalAs(UnmanagedType.LPStr)]
-        public string pOutputFile;
-        [MarshalAs(UnmanagedType.LPStr)]
-        public string pDataType;
-    }
-
-    [DllImport("winspool.Drv", EntryPoint="OpenPrinterA", SetLastError=true, CharSet=CharSet.Ansi, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool OpenPrinter(string szPrinter, out IntPtr hPrinter, IntPtr pd);
-
-    [DllImport("winspool.Drv", EntryPoint="ClosePrinter", SetLastError=true, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool ClosePrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.Drv", EntryPoint="StartDocPrinterA", SetLastError=true, CharSet=CharSet.Ansi, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool StartDocPrinter(IntPtr hPrinter, Int32 level, [In, MarshalAs(UnmanagedType.LPStruct)] DOCINFOA di);
-
-    [DllImport("winspool.Drv", EntryPoint="EndDocPrinter", SetLastError=true, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool EndDocPrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.Drv", EntryPoint="StartPagePrinter", SetLastError=true, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool StartPagePrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.Drv", EntryPoint="EndPagePrinter", SetLastError=true, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool EndPagePrinter(IntPtr hPrinter);
-
-    [DllImport("winspool.Drv", EntryPoint="WritePrinter", SetLastError=true, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]
-    public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, Int32 dwCount, out Int32 dwWritten);
-
-    public static bool SendBytesToPrinter(string szPrinterName, byte[] bytes)
-    {
-        IntPtr hPrinter;
-        DOCINFOA di = new DOCINFOA();
-        di.pDocName = "iMenu Pedido";
-        di.pDataType = "RAW";
-
-        if (!OpenPrinter(szPrinterName.Normalize(), out hPrinter, IntPtr.Zero))
-            return false;
-
-        bool success = false;
-
-        if (StartDocPrinter(hPrinter, 1, di))
-        {
-            if (StartPagePrinter(hPrinter))
-            {
-                IntPtr pUnmanagedBytes = Marshal.AllocCoTaskMem(bytes.Length);
-                Marshal.Copy(bytes, 0, pUnmanagedBytes, bytes.Length);
-
-                int dwWritten;
-                success = WritePrinter(hPrinter, pUnmanagedBytes, bytes.Length, out dwWritten);
-
-                Marshal.FreeCoTaskMem(pUnmanagedBytes);
-                EndPagePrinter(hPrinter);
-            }
-
-            EndDocPrinter(hPrinter);
-        }
-
-        ClosePrinter(hPrinter);
-        return success;
-    }
-}
-"@
-
-[byte[]]$bytes = [System.IO.File]::ReadAllBytes($filePath)
-$ok = [RawPrinterHelper]::SendBytesToPrinter($printerName, $bytes)
-
-if (-not $ok) {
-  throw "Falha ao enviar impressão RAW para $printerName"
-}
-`
-
-        const psPath = path.join(os.tmpdir(), `imenu_raw_print_${Date.now()}.ps1`)
-        fs.writeFileSync(psPath, ps, 'utf8')
-
-        exec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psPath}"`, err => {
+        exec(cmd, err => {
             try {
                 fs.unlinkSync(filePath)
-            } catch {}
-
-            try {
-                fs.unlinkSync(psPath)
             } catch {}
 
             if (err) reject(err)
@@ -317,7 +215,7 @@ function printEthernet(text, config) {
         })
 
         socket.connect(Number(config.PRINTER_PORT), config.PRINTER_IP, () => {
-            socket.write(iconv.encode(text, 'cp850'), err => {
+            socket.write(Buffer.from(text, 'binary'), err => {
                 if (err) {
                     socket.destroy()
                     reject(err)
@@ -350,7 +248,7 @@ function printBluetooth(text, config) {
                 return
             }
 
-            port.write(iconv.encode(text, 'cp850'), err => {
+            port.write(Buffer.from(text, 'binary'), err => {
                 if (err) {
                     port.close(() => {})
                     reject(err)
@@ -388,20 +286,6 @@ async function updateJob(supabase, id, patch) {
         .eq('id', id)
 
     if (error) throw error
-}
-
-function printerStart() {
-    return [
-        ESC.init,
-        ESC.alignLeft,
-        ESC.fontA,
-        ESC.normalSize,
-        ESC.boldOff,
-        ESC.underlineOff,
-        ESC.charSpacingNormal,
-        ESC.densityStrong1,
-        ESC.densityStrong2,
-    ].join('')
 }
 
 async function buildReceipt(supabase, orderId) {
@@ -453,12 +337,9 @@ async function buildReceipt(supabase, orderId) {
         subMap[s.order_item_id].push(s)
     })
 
-    let txt = printerStart()
+    let txt = ESC.init
 
-    txt += ESC.alignCenter
-    txt += ESC.boldOn + ESC.doubleSize + 'COZINHA\n' + ESC.normalSize + ESC.boldOff
-    txt += ESC.alignLeft
-    txt += '----------------------------------------\n'
+    txt += ESC.boldOn + 'COZINHA\n' + ESC.boldOff
 
     txt += `Pedido: ${order.display_id}\n`
     txt += `Hora: ${new Date(order.created_at).toLocaleString('pt-BR')}\n`
@@ -545,7 +426,8 @@ async function startPrinterLoop() {
             const job = await getNextJob(supabase, latestConfig)
 
             if (job) {
-                sendLog(`Imprimindo pedido: ${job.id}`)
+                const copies = getPrintCopies(latestConfig)
+                sendLog(`Imprimindo pedido: ${job.id}${copies === 2 ? ' (2 vias)' : ''}`)
 
                 await updateJob(supabase, job.id, {
                     status: 'printing',
@@ -554,7 +436,7 @@ async function startPrinterLoop() {
 
                 const receipt = await buildReceipt(supabase, job.order_id)
 
-                await printRaw(receipt, latestConfig)
+                await printConfiguredCopies(receipt, latestConfig)
 
                 await updateJob(supabase, job.id, {
                     status: 'printed',
@@ -562,7 +444,7 @@ async function startPrinterLoop() {
                     last_error: null,
                 })
 
-                sendLog(`Impresso: ${job.id}`)
+                sendLog(`Impresso: ${job.id}${copies === 2 ? ' (2 vias)' : ''}`)
             }
         } catch (err) {
             sendLog(`Erro: ${err.message}`)
@@ -589,7 +471,7 @@ async function testPrint(config) {
         `Hora: ${new Date().toLocaleString('pt-BR')}\n\n\n` +
         ESC.cut
 
-    await printRaw(txt, config)
+    await printConfiguredCopies(txt, config)
 }
 
 async function loginAndGetRestaurant(email, password) {

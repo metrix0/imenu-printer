@@ -196,6 +196,52 @@
             gap: 14px;
         }
 
+        .checkboxOption {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            width: 100%;
+            margin: 18px 0 0;
+            padding: 14px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: #f9fafb;
+            cursor: pointer;
+        }
+
+        .checkboxOption:hover {
+            border-color: var(--brand-border);
+            background: var(--brand-soft);
+        }
+
+        .checkboxOption input {
+            width: 18px;
+            height: 18px;
+            margin: 0;
+            padding: 0;
+            accent-color: var(--brand);
+            flex-shrink: 0;
+            box-shadow: none;
+        }
+
+        .checkboxOptionText {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+
+        .checkboxOptionTitle {
+            font-size: 14px;
+            font-weight: 800;
+            color: var(--text);
+        }
+
+        .checkboxOptionDescription {
+            font-size: 13px;
+            font-weight: 400;
+            color: var(--muted);
+        }
+
         button {
             border: 0;
             border-radius: 10px;
@@ -501,6 +547,14 @@
                         </div>
                     </div>
                 </div>
+
+                <label class="checkboxOption" for="PRINT_TWO_COPIES">
+                    <input id="PRINT_TWO_COPIES" type="checkbox" onchange="saveConfig();" />
+                    <span class="checkboxOptionText">
+                        <span class="checkboxOptionTitle">Imprimir 2 vias</span>
+                        <span class="checkboxOptionDescription">Imprime duas cópias completas de cada pedido.</span>
+                    </span>
+                </label>
             </div>
 
             <div class="card">
@@ -527,6 +581,7 @@
         'PRINTER_NAME',
         'PRINTER_IP',
         'PRINTER_PORT',
+        'PRINT_TWO_COPIES',
     ]
 
     let currentConfig = {}
@@ -633,7 +688,7 @@
             const el = document.getElementById(field)
             if (!el) continue
 
-            config[field] = el.value
+            config[field] = el.type === 'checkbox' ? el.checked : el.value
         }
 
         config.PRINTER_BAUD_RATE = 9600
@@ -650,6 +705,11 @@
         for (const field of fields) {
             const el = document.getElementById(field)
             if (!el) continue
+
+            if (el.type === 'checkbox') {
+                el.checked = config[field] === true
+                continue
+            }
 
             if (config[field] !== undefined && config[field] !== null) {
                 el.value = config[field]
