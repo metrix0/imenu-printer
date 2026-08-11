@@ -462,6 +462,121 @@ async function updateJob(supabase, id, patch) {
     if (error) throw error
 }
 
+async function getRecentPrintHistory(limit = 15) {
+    const config = readConfig()
+
+    if (!config.RESTAURANT_ID) {
+        return []
+    }
+
+    const supabase = getSupabase(true)
+    const { data: jobs, error: jobsError } = await supabase
+        .from('print_jobs')
+        .select('id, order_id, status, created_at, printed_at')
+        .eq('restaurant_id', config.RESTAURANT_ID)
+        .eq('status', 'printed')
+        .order('printed_at', { ascending: false })
+        .limit(Math.max(limit * 2, limit))
+
+    if (jobsError) throw jobsError
+
+    const latestByOrder = []
+    const seenOrderIds = new Set()
+
+    for (const job of jobs || []) {
+        if (!job.order_id || seenOrderIds.has(job.order_id)) continue
+
+        seenOrderIds.add(job.order_id)
+        latestByOrder.push(job)
+
+        if (latestByOrder.length >= limit) break
+    }
+
+    const orderIds = latestByOrder.map(job => job.order_id)
+    if (orderIds.length === 0) return []
+
+    const { data: orders, error: ordersError } = await supabase
+        .from('orders')
+        .select('id, display_id, customer_name')
+        .in('id', orderIds)
+
+    if (ordersError) throw ordersError
+
+    const orderById = new Map((orders || []).map(order => [order.id, order]))
+
+    return latestByOrder.map(job => {
+        const order = orderById.get(job.order_id)
+
+        return {
+            order_id: job.order_id,
+            display_id: order?.display_id ?? null,
+            customer_name: order?.customer_name || '',
+            printed_at: job.printed_at || job.created_at || null,
+        }
+    })
+}
+
+async function reprintOrder(orderId) {
+    const config = readConfig()
+
+    if (!config.RESTAURANT_ID) {
+        throw new Error('Faça login antes de reimprimir um pedido.')
+    }
+
+    if (!orderId) {
+        throw new Error('Pedido inválido.')
+    }
+
+    const supabase = getSupabase(true)
+
+    const { data: matchingJobs, error: matchingJobError } = await supabase
+        .from('print_jobs')
+        .select('id')
+        .eq('restaurant_id', config.RESTAURANT_ID)
+        .eq('order_id', orderId)
+        .eq('status', 'printed')
+        .limit(1)
+
+    if (matchingJobError) throw matchingJobError
+
+    if (!matchingJobs?.length) {
+        throw new Error('Pedido não encontrado no histórico deste restaurante.')
+    }
+
+    const { data: activeJobs, error: activeJobsError } = await supabase
+        .from('print_jobs')
+        .select('id')
+        .eq('restaurant_id', config.RESTAURANT_ID)
+        .in('status', ['queued', 'printing'])
+        .limit(1)
+
+    if (activeJobsError) throw activeJobsError
+
+    if (activeJobs?.length) {
+        throw new Error('Aguarde os pedidos pendentes terminarem de imprimir.')
+    }
+
+    const { data: order, error: orderError } = await supabase
+        .from('orders')
+        .select('display_id')
+        .eq('id', orderId)
+        .single()
+
+    if (orderError) throw orderError
+
+    const displayId = order?.display_id || String(orderId).slice(0, 8)
+    const copies = getPrintCopies(config)
+
+    sendLog(`Reimprimindo pedido #${displayId}${copies === 2 ? ' (2 vias)' : ''}`)
+
+    const receipt = await buildReceipt(supabase, orderId)
+    await printConfiguredCopies(receipt, config)
+
+    sendLog(`Reimpresso pedido #${displayId}${copies === 2 ? ' (2 vias)' : ''}`)
+
+    return { ok: true }
+}
+
 function printerStart() {
     return [
         ESC.init,
@@ -874,6 +989,14 @@ ipcMain.handle('printer:test', async (_, config) => {
 
     await testPrint(testConfig)
     return { ok: true }
+})
+
+ipcMain.handle('orders:history', async () => {
+    return await getRecentPrintHistory()
+})
+
+ipcMain.handle('orders:reprint', async (_, orderId) => {
+    return await reprintOrder(orderId)
 })
 
 ipcMain.handle('auth:login', async (_, { email, password }) => {

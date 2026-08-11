@@ -1,6 +1,6 @@
 {
   "name": "imenu-printer-app",
-  "version": "1.0.5",
+  "version": "1.0.7",
   "description": "iMenu Impressora",
   "author": "iMenu",
   "main": "main.cjs",
@@ -28,6 +28,7 @@
       "main.cjs",
       "preload.cjs",
       "index.html",
+      "receipt-settings.js",
       "package.json"
     ],
     "asarUnpack": [

@@ -393,6 +393,91 @@
             white-space: pre-wrap;
         }
 
+        .printHistoryList {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        .printHistoryRow {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) auto auto;
+            align-items: center;
+            gap: 12px;
+            padding: 13px 14px;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            background: #f9fafb;
+        }
+
+        .printHistoryInfo {
+            min-width: 0;
+        }
+
+        .printHistoryOrder {
+            margin: 0;
+            font-size: 14px;
+            font-weight: 800;
+        }
+
+        .printHistoryCustomer {
+            margin: 4px 0 0;
+            overflow: hidden;
+            color: var(--muted);
+            font-size: 13px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .printHistoryStatus {
+            padding: 6px 9px;
+            border-radius: 999px;
+            background: var(--green-soft);
+            color: #166534;
+            font-size: 11px;
+            font-weight: 800;
+            white-space: nowrap;
+        }
+
+        .printHistoryButton {
+            padding: 8px 11px;
+            background: var(--brand-soft);
+            color: var(--brand);
+            border: 1px solid var(--brand-border);
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        .printHistoryButton:hover:not(:disabled) {
+            background: #ffe2d6;
+        }
+
+        .printHistoryButton:disabled {
+            cursor: default;
+            opacity: 0.55;
+        }
+
+        .printHistoryMessage {
+            margin: 0;
+            padding: 18px 12px;
+            border: 1px dashed var(--border);
+            border-radius: 12px;
+            color: var(--muted);
+            font-size: 13px;
+            text-align: center;
+        }
+
+        @media (max-width: 620px) {
+            .printHistoryRow {
+                grid-template-columns: minmax(0, 1fr) auto;
+            }
+
+            .printHistoryButton {
+                grid-column: 1 / -1;
+                width: 100%;
+            }
+        }
+
         .connectionHelp {
             color: var(--muted);
             font-size: 13px;
@@ -560,6 +645,24 @@
             <div class="card">
                 <div class="cardHeader">
                     <div class="iconTitle">
+                        <div class="iconBadge">🧾</div>
+                        <div>
+                            <h2 class="cardTitle">Histórico de impressão</h2>
+                            <p class="cardDescription">Pedidos recentes enviados para a impressora.</p>
+                        </div>
+                    </div>
+
+                    <button class="ghost" onclick="loadPrintHistory()">Atualizar</button>
+                </div>
+
+                <div id="printHistoryList" class="printHistoryList">
+                    <p class="printHistoryMessage">Carregando pedidos...</p>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="cardHeader">
+                    <div class="iconTitle">
                         <div class="iconBadge">📋</div>
                         <div>
                             <h2 class="cardTitle">Registros</h2>
@@ -592,6 +695,89 @@
 
         logs.textContent += message + '\n'
         logs.scrollTop = logs.scrollHeight
+    }
+
+    function formatPrintDate(value) {
+        if (!value) return ''
+
+        const date = new Date(value)
+        if (Number.isNaN(date.getTime())) return ''
+
+        return date.toLocaleString('pt-BR', {
+            day: '2-digit',
+            month: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+        })
+    }
+
+    async function reprintOrder(orderId, button) {
+        if (!orderId || button.disabled) return
+
+        button.disabled = true
+        button.textContent = 'Enviando...'
+
+        try {
+            await window.api.reprintOrder(orderId)
+            log('Pedido enviado novamente para a impressora.')
+        } catch (err) {
+            log(`Erro ao reimprimir: ${err?.message || err}`)
+        } finally {
+            button.disabled = false
+            button.textContent = 'Imprimir novamente'
+        }
+    }
+
+    async function loadPrintHistory() {
+        const list = document.getElementById('printHistoryList')
+        const appScreen = document.getElementById('appScreen')
+
+        if (!list || appScreen.classList.contains('hidden')) return
+
+        try {
+            const rows = await window.api.getPrintHistory()
+            list.textContent = ''
+
+            if (!Array.isArray(rows) || rows.length === 0) {
+                list.innerHTML = '<p class="printHistoryMessage">Nenhum pedido impresso recentemente.</p>'
+                return
+            }
+
+            for (const row of rows) {
+                const item = document.createElement('div')
+                item.className = 'printHistoryRow'
+
+                const info = document.createElement('div')
+                info.className = 'printHistoryInfo'
+
+                const order = document.createElement('p')
+                order.className = 'printHistoryOrder'
+                order.textContent = `Pedido #${row.display_id || String(row.order_id).slice(0, 8)}`
+
+                const customer = document.createElement('p')
+                customer.className = 'printHistoryCustomer'
+                customer.textContent = [
+                    row.customer_name || 'Cliente não informado',
+                    formatPrintDate(row.printed_at),
+                ].filter(Boolean).join(' • ')
+
+                const status = document.createElement('span')
+                status.className = 'printHistoryStatus'
+                status.textContent = 'Impresso'
+
+                const button = document.createElement('button')
+                button.type = 'button'
+                button.className = 'printHistoryButton'
+                button.textContent = 'Imprimir novamente'
+                button.addEventListener('click', () => reprintOrder(row.order_id, button))
+
+                info.append(order, customer)
+                item.append(info, status, button)
+                list.appendChild(item)
+            }
+        } catch (err) {
+            list.innerHTML = '<p class="printHistoryMessage">Não foi possível carregar o histórico agora.</p>'
+        }
     }
 
     function normalizeErrorMessage(err) {
@@ -643,6 +829,7 @@
             config.LOGGED_IN_EMAIL || ''
 
         updatePrinterStatus()
+        loadPrintHistory()
     }
 
     function isPrinterConfigured() {
@@ -839,6 +1026,7 @@
     }
 
     window.api.onLog(log)
+    window.setInterval(loadPrintHistory, 15000)
 
     async function init() {
         const config = await window.api.getConfig()
