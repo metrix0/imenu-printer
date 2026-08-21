@@ -154,6 +154,20 @@ jobs:
             throw "Installer not found: $source"
           }
 
+          Push-Location "imenu-preview"
+          git remote set-url origin "https://metrix0:$env:GH_TOKEN@github.com/metrix0/imenu.git"
+          git config http.version HTTP/1.1
+          git config http.postBuffer 524288000
+          git config http.lowSpeedLimit 0
+          git config http.lowSpeedTime 999999
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git fetch origin preview
+          if ($LASTEXITCODE -ne 0) { throw "Could not fetch latest iMenu preview." }
+          git reset --hard origin/preview
+          Pop-Location
+
           New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
           Copy-Item $source $target -Force
 
@@ -166,38 +180,45 @@ jobs:
           Set-Content -Path (Join-Path $targetDir "imenu-printer.json") -Value $metadata -Encoding utf8NoBOM
 
           Push-Location "imenu-preview"
-          git remote set-url origin "https://metrix0:$env:GH_TOKEN@github.com/metrix0/imenu.git"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "public/downloads/$fileName" "public/downloads/imenu-printer.json"
           git diff --cached --quiet
 
           if ($LASTEXITCODE -ne 0) {
             git commit -m "chore: update printer download to $env:VERSION"
+            if ($LASTEXITCODE -ne 0) { throw "Could not create iMenu preview download commit." }
 
             $pushed = $false
+            $lastPushOutput = ""
             for ($attempt = 1; $attempt -le 5; $attempt++) {
-              git fetch origin preview
-              git rebase origin/preview
-
-              if ($LASTEXITCODE -ne 0) {
-                throw "Could not rebase printer download update onto the latest preview branch."
+              if ($attempt -gt 1) {
+                git fetch origin preview
+                if ($LASTEXITCODE -ne 0) { throw "Could not refresh iMenu preview before retry." }
+                git rebase origin/preview
+                if ($LASTEXITCODE -ne 0) { throw "Could not rebase printer download update onto latest preview." }
               }
 
-              git push origin HEAD:preview
-              if ($LASTEXITCODE -eq 0) {
+              $pushLines = git -c http.version=HTTP/1.1 push origin HEAD:preview 2>&1
+              $pushCode = $LASTEXITCODE
+              $lastPushOutput = ($pushLines | Out-String).Trim()
+              Write-Host $lastPushOutput
+
+              if ($pushCode -eq 0) {
                 $pushed = $true
                 break
               }
 
-              Start-Sleep -Seconds (2 * $attempt)
+              Start-Sleep -Seconds (3 * $attempt)
             }
 
             if (-not $pushed) {
-              throw "Could not push printer download update to preview after 5 attempts."
+              $summary = ($lastPushOutput -replace '[\r\n]+', ' ')
+              if ($summary.Length -gt 110) { $summary = $summary.Substring(0, 110) }
+              "error=$summary" >> $env:GITHUB_OUTPUT
+              throw "Could not push printer download update to preview after 5 attempts. $summary"
             }
           }
 
+          "error=" >> $env:GITHUB_OUTPUT
           Pop-Location
 
       - name: Save version
@@ -219,14 +240,15 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          function Set-PhaseStatus($context, $outcome) {
+          function Set-PhaseStatus($context, $outcome, $description) {
             $state = if ($outcome -eq "success") { "success" } else { "failure" }
+            if ([string]::IsNullOrWhiteSpace($description)) { $description = $outcome }
             gh api --method POST "repos/${{ github.repository }}/statuses/${{ github.sha }}" `
               -f "state=$state" `
               -f "context=$context" `
-              -f "description=$outcome"
+              -f "description=$description"
           }
 
-          Set-PhaseStatus "printer-sync-token" "${{ steps.verify_sync_token.outcome }}"
-          Set-PhaseStatus "printer-release" "${{ steps.release.outcome }}"
-          Set-PhaseStatus "printer-preview-sync" "${{ steps.sync_preview.outcome }}"
+          Set-PhaseStatus "printer-sync-token" "${{ steps.verify_sync_token.outcome }}" "${{ steps.verify_sync_token.outcome }}"
+          Set-PhaseStatus "printer-release" "${{ steps.release.outcome }}" "${{ steps.release.outcome }}"
+          Set-PhaseStatus "printer-preview-sync" "${{ steps.sync_preview.outcome }}" "${{ steps.sync_preview.outputs.error }}"
