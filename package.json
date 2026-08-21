@@ -1,6 +1,6 @@
 {
   "name": "imenu-printer-app",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "iMenu Impressora",
   "author": "iMenu",
   "main": "main.cjs",
