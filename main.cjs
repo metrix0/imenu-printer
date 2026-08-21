@@ -346,7 +346,6 @@ if (-not $ok) {
 
         const psPath = path.join(os.tmpdir(), `imenu_raw_print_${Date.now()}.ps1`)
         fs.writeFileSync(psPath, ps, 'utf8')
-
         exec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psPath}"`, err => {
             try {
                 fs.unlinkSync(filePath)
@@ -654,6 +653,7 @@ async function buildReceipt(supabase, orderId) {
           id,
           display_id,
           created_at,
+          scheduled_for,
           customer_name,
           customer_phone,
           customer_address,
@@ -713,6 +713,17 @@ async function buildReceipt(supabase, orderId) {
 
     const pickup = isPickupOrder(order)
     const separator = '-'.repeat(RECEIPT_WIDTH)
+    const scheduledDate = order.scheduled_for ? new Date(order.scheduled_for) : null
+    const scheduledLabel = scheduledDate && !Number.isNaN(scheduledDate.getTime())
+        ? scheduledDate.toLocaleString('pt-BR', {
+            timeZone: 'America/Sao_Paulo',
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit',
+        })
+        : null
     let text = printerStart()
 
     text += ESC.alignCenter
@@ -722,6 +733,17 @@ async function buildReceipt(supabase, orderId) {
     text += `${separator}\n`
 
     text += ESC.boldOn + `PEDIDO #${order.display_id}\n` + ESC.boldOff
+
+    if (scheduledLabel) {
+        text += `${separator}\n`
+        text += ESC.alignCenter
+        text += ESC.boldOn + ESC.doubleSize + 'AGENDADO\n'
+        text += ESC.normalSize
+        text += ESC.boldOn + `${pickup ? 'RETIRADA' : 'ENTREGA'}: ${scheduledLabel}\n` + ESC.boldOff
+        text += ESC.alignLeft
+        text += `${separator}\n`
+    }
+
     text += `Hora: ${new Date(order.created_at).toLocaleString('pt-BR')}\n`
     text += `Tipo: ${pickup ? 'Retirada' : 'Entrega'}\n`
 
@@ -896,7 +918,6 @@ async function loginAndGetRestaurant(email, password) {
         email,
         password,
     })
-
     if (loginError) throw loginError
 
     const userId = loginData.user.id
