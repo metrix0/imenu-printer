@@ -129,7 +129,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Dispatch and verify iMenu preview sync
+      - name: Queue and verify iMenu preview sync
         id: sync_preview
         shell: pwsh
         env:
@@ -140,24 +140,33 @@ jobs:
           $releaseUrl = "https://github.com/metrix0/imenu-printer/releases/download/v$env:VERSION/$encodedFileName"
           $updatedAt = (Get-Date).ToUniversalTime().ToString("o")
 
-          $dispatchPayload = [ordered]@{
-            event_type = "printer-release"
-            client_payload = [ordered]@{
-              version = $env:VERSION
-              release_url = $releaseUrl
-              updated_at = $updatedAt
-            }
-          } | ConvertTo-Json -Depth 5 -Compress
+          $trigger = [ordered]@{
+            version = $env:VERSION
+            updatedAt = $updatedAt
+            releaseUrl = $releaseUrl
+          } | ConvertTo-Json -Compress
 
-          $dispatchPath = Join-Path $env:RUNNER_TEMP "imenu-printer-dispatch.json"
-          [IO.File]::WriteAllText($dispatchPath, $dispatchPayload, [Text.UTF8Encoding]::new($false))
-          gh api --method POST repos/metrix0/imenu/dispatches --input $dispatchPath
-          $dispatchCode = $LASTEXITCODE
-          Remove-Item $dispatchPath -Force
+          $existingSha = gh api "repos/metrix0/imenu/contents/.printer-release-trigger.json?ref=preview" --jq ".sha" 2>$null
+          $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
 
-          if ($dispatchCode -ne 0) {
-            "error=could not dispatch printer release to imenu" >> $env:GITHUB_OUTPUT
-            throw "Could not dispatch printer release to metrix0/imenu."
+          $payload = [ordered]@{
+            message = "chore: queue printer download $env:VERSION"
+            content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($trigger))
+            branch = "preview"
+          }
+          if ($hasExisting) {
+            $payload.sha = $existingSha
+          }
+
+          $payloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger.json"
+          [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+          gh api --method PUT repos/metrix0/imenu/contents/.printer-release-trigger.json --input $payloadPath > $null
+          $queueCode = $LASTEXITCODE
+          Remove-Item $payloadPath -Force
+
+          if ($queueCode -ne 0) {
+            "error=could not update preview trigger" >> $env:GITHUB_OUTPUT
+            throw "Could not update metrix0/imenu preview trigger."
           }
 
           $synced = $false
