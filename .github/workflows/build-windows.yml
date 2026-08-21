@@ -68,8 +68,25 @@ jobs:
 
       - name: Increment version
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          $current = node -p "require('./package.json').version"
+          $packageVersion = node -p "require('./package.json').version"
+          $versions = @($packageVersion)
+
+          $releases = gh release list --limit 100 --json tagName | ConvertFrom-Json
+          foreach ($release in $releases) {
+            $version = $release.tagName -replace '^v', ''
+            if ($version -match '^\d+\.\d+\.\d+$') {
+              $versions += $version
+            }
+          }
+
+          $current = $versions | Sort-Object -Descending -Property @{ Expression = {
+            $p = $_.Split('.')
+            ([int]$p[0] * 100) + ([int]$p[1] * 10) + [int]$p[2]
+          }} | Select-Object -First 1
+
           $parts = $current.Split('.')
           $major = [int]$parts[0]
           $minor = [int]$parts[1]
