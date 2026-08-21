@@ -77,6 +77,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: npm run dist -- --publish always
 
+      - name: Publish GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "v$env:VERSION" --draft=false
+
       - name: Save build
         uses: actions/upload-artifact@v4
         with:
