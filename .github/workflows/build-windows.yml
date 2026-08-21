@@ -129,123 +129,79 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Sync installer and metadata to iMenu preview
+      - name: Trigger and verify iMenu preview sync
         id: sync_preview
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
         run: |
           $fileName = "iMenu Impressora Setup $env:VERSION.exe"
-          $source = Join-Path "dist" $fileName
+          $encodedFileName = [uri]::EscapeDataString($fileName)
+          $releaseUrl = "https://github.com/metrix0/imenu-printer/releases/download/v$env:VERSION/$encodedFileName"
+          $updatedAt = (Get-Date).ToUniversalTime().ToString("o")
 
-          if (-not (Test-Path $source)) {
-            throw "Installer not found: $source"
-          }
-
-          # Upload the EXE directly as a Git blob. This bypasses cross-repo git push/auth/pack issues.
-          $blobPayloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-exe-blob.json"
-          $base64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($source))
-          $blobPayload = '{"content":"' + $base64 + '","encoding":"base64"}'
-          [IO.File]::WriteAllText($blobPayloadPath, $blobPayload, [Text.UTF8Encoding]::new($false))
-          $exeBlobSha = gh api --method POST repos/metrix0/imenu/git/blobs --input $blobPayloadPath --jq ".sha"
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($exeBlobSha)) {
-            throw "Could not upload installer blob to metrix0/imenu."
-          }
-          Remove-Item $blobPayloadPath -Force
-          Remove-Variable base64
-
-          $metadata = [ordered]@{
+          # Only a tiny trigger crosses repositories. The iMenu repository then downloads
+          # and commits the EXE to preview using its own native GitHub Actions token.
+          $trigger = [ordered]@{
             version = $env:VERSION
-            updatedAt = (Get-Date).ToUniversalTime().ToString("o")
-            downloadUrl = "/downloads/$([uri]::EscapeDataString($fileName))"
-          } | ConvertTo-Json
-
-          $metadataPayloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-metadata-blob.json"
-          $metadataPayload = @{
-            content = $metadata
-            encoding = "utf-8"
+            updatedAt = $updatedAt
+            releaseUrl = $releaseUrl
           } | ConvertTo-Json -Compress
-          [IO.File]::WriteAllText($metadataPayloadPath, $metadataPayload, [Text.UTF8Encoding]::new($false))
-          $metadataBlobSha = gh api --method POST repos/metrix0/imenu/git/blobs --input $metadataPayloadPath --jq ".sha"
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($metadataBlobSha)) {
-            throw "Could not upload printer metadata blob to metrix0/imenu."
+
+          $triggerBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($trigger))
+          $existingSha = gh api "repos/metrix0/imenu/contents/.github/printer-release-trigger.json?ref=preview" --jq ".sha" 2>$null
+          $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
+
+          $payload = [ordered]@{
+            message = "chore: queue printer download $env:VERSION"
+            content = $triggerBase64
+            branch = "preview"
           }
-          Remove-Item $metadataPayloadPath -Force
+          if ($hasExisting) {
+            $payload.sha = $existingSha
+          }
 
+          $payloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger.json"
+          [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+          gh api --method PUT repos/metrix0/imenu/contents/.github/printer-release-trigger.json --input $payloadPath > $null
+          Remove-Item $payloadPath -Force
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not queue printer release sync on metrix0/imenu preview."
+          }
+
+          # Wait until iMenu's preview-only workflow has committed both the real EXE and metadata.
           $synced = $false
-          $lastError = ""
+          for ($attempt = 1; $attempt -le 48; $attempt++) {
+            Start-Sleep -Seconds 5
 
-          for ($attempt = 1; $attempt -le 5; $attempt++) {
-            $baseCommit = gh api repos/metrix0/imenu/git/ref/heads/preview --jq ".object.sha"
-            if ($LASTEXITCODE -ne 0) { throw "Could not read iMenu preview ref." }
-
-            $baseTree = gh api "repos/metrix0/imenu/git/commits/$baseCommit" --jq ".tree.sha"
-            if ($LASTEXITCODE -ne 0) { throw "Could not read iMenu preview tree." }
-
-            $treePayloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-tree.json"
-            $treePayload = @{
-              base_tree = $baseTree
-              tree = @(
-                @{
-                  path = "public/downloads/$fileName"
-                  mode = "100644"
-                  type = "blob"
-                  sha = $exeBlobSha
-                },
-                @{
-                  path = "public/downloads/imenu-printer.json"
-                  mode = "100644"
-                  type = "blob"
-                  sha = $metadataBlobSha
-                }
-              )
-            } | ConvertTo-Json -Depth 6 -Compress
-            [IO.File]::WriteAllText($treePayloadPath, $treePayload, [Text.UTF8Encoding]::new($false))
-            $newTree = gh api --method POST repos/metrix0/imenu/git/trees --input $treePayloadPath --jq ".sha"
-            Remove-Item $treePayloadPath -Force
-            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($newTree)) {
-              throw "Could not create iMenu preview tree."
+            $metadataContent = gh api "repos/metrix0/imenu/contents/public/downloads/imenu-printer.json?ref=preview" --jq ".content" 2>$null
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($metadataContent)) {
+              continue
             }
 
-            $commitPayloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-commit.json"
-            $commitPayload = @{
-              message = "chore: update printer download to $env:VERSION"
-              tree = $newTree
-              parents = @($baseCommit)
-            } | ConvertTo-Json -Depth 4 -Compress
-            [IO.File]::WriteAllText($commitPayloadPath, $commitPayload, [Text.UTF8Encoding]::new($false))
-            $newCommit = gh api --method POST repos/metrix0/imenu/git/commits --input $commitPayloadPath --jq ".sha"
-            Remove-Item $commitPayloadPath -Force
-            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($newCommit)) {
-              throw "Could not create iMenu preview commit."
+            try {
+              $cleanBase64 = $metadataContent -replace '\s', ''
+              $metadataText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($cleanBase64))
+              $metadata = $metadataText | ConvertFrom-Json
+            }
+            catch {
+              continue
             }
 
-            $refPayloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-ref.json"
-            $refPayload = @{
-              sha = $newCommit
-              force = $false
-            } | ConvertTo-Json -Compress
-            [IO.File]::WriteAllText($refPayloadPath, $refPayload, [Text.UTF8Encoding]::new($false))
+            if ($metadata.version -ne $env:VERSION) {
+              continue
+            }
 
-            $refOutput = gh api --method PATCH repos/metrix0/imenu/git/refs/heads/preview --input $refPayloadPath 2>&1
-            $refCode = $LASTEXITCODE
-            Remove-Item $refPayloadPath -Force
-
-            if ($refCode -eq 0) {
+            $exeSize = gh api "repos/metrix0/imenu/contents/public/downloads/$encodedFileName?ref=preview" --jq ".size" 2>$null
+            if ($LASTEXITCODE -eq 0 -and [int64]$exeSize -gt 1000000) {
               $synced = $true
               break
             }
-
-            $lastError = ($refOutput | Out-String).Trim()
-            Write-Host "Preview moved while syncing; retrying ($attempt/5)."
-            Start-Sleep -Seconds (2 * $attempt)
           }
 
           if (-not $synced) {
-            $summary = ($lastError -replace '[\r\n]+', ' ')
-            if ($summary.Length -gt 110) { $summary = $summary.Substring(0, 110) }
-            "error=$summary" >> $env:GITHUB_OUTPUT
-            throw "Could not update iMenu preview ref after 5 attempts. $summary"
+            "error=iMenu preview did not publish the EXE within 4 minutes" >> $env:GITHUB_OUTPUT
+            throw "iMenu preview did not publish $fileName within 4 minutes."
           }
 
           "error=" >> $env:GITHUB_OUTPUT
