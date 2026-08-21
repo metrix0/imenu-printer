@@ -45,25 +45,10 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Reset failed version chain
-        if: ${{ contains(github.event.head_commit.message, '[reset-1.0.8]') }}
+      - name: Restore 1.0.8 baseline for retry
+        if: ${{ contains(github.event.head_commit.message, '[retry-1.0.9]') }}
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          foreach ($tag in @("v1.0.9", "v1.1.0", "v1.1.1", "v1.1.2")) {
-            gh release view $tag --json tagName *> $null
-            if ($LASTEXITCODE -eq 0) {
-              gh release delete $tag --cleanup-tag --yes
-            }
-
-            $remoteTag = git ls-remote --tags origin "refs/tags/$tag"
-            if ($remoteTag) {
-              git push origin ":refs/tags/$tag"
-            }
-          }
-
-          npm version 1.0.8 --no-git-tag-version
+        run: npm version 1.0.8 --no-git-tag-version
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -109,16 +94,26 @@ jobs:
           npm version $next --no-git-tag-version
           "VERSION=$next" >> $env:GITHUB_ENV
 
-      - name: Build and publish installer
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: npm run dist -- --publish always
-
-      - name: Publish GitHub release
+      - name: Build or reuse installer release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release edit "v$env:VERSION" --draft=false
+        run: |
+          $tag = "v$env:VERSION"
+          $fileName = "iMenu Impressora Setup $env:VERSION.exe"
+
+          gh release view $tag --json tagName *> $null
+          $releaseExists = $LASTEXITCODE -eq 0
+
+          if ($releaseExists) {
+            New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+            gh release download $tag --pattern $fileName --dir "dist" --clobber
+          }
+          else {
+            npm run dist -- --publish always
+          }
+
+          gh release edit $tag --draft=false
 
       - name: Save build
         uses: actions/upload-artifact@v4
@@ -127,15 +122,6 @@ jobs:
           path: dist/**
           if-no-files-found: error
           retention-days: 30
-
-      - name: Save version
-        shell: pwsh
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json
-          git commit -m "chore: bump printer version to $env:VERSION"
-          git push
 
       - name: Checkout iMenu preview
         if: ${{ env.IMENU_SYNC_TOKEN != '' }}
@@ -147,17 +133,6 @@ jobs:
           path: imenu-preview
           fetch-depth: 0
           persist-credentials: false
-
-      - name: Configure iMenu push authentication
-        if: ${{ env.IMENU_SYNC_TOKEN != '' }}
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
-        run: |
-          Push-Location "imenu-preview"
-          gh auth setup-git
-          git remote set-url origin https://github.com/metrix0/imenu.git
-          Pop-Location
 
       - name: Sync installer to iMenu preview
         if: ${{ env.IMENU_SYNC_TOKEN != '' }}
@@ -186,6 +161,7 @@ jobs:
           Set-Content -Path (Join-Path $targetDir "imenu-printer.json") -Value $metadata -Encoding utf8NoBOM
 
           Push-Location "imenu-preview"
+          git remote set-url origin "https://x-access-token:$env:GH_TOKEN@github.com/metrix0/imenu.git"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add "public/downloads/$fileName" "public/downloads/imenu-printer.json"
@@ -223,3 +199,13 @@ jobs:
         if: ${{ env.IMENU_SYNC_TOKEN == '' }}
         shell: pwsh
         run: Write-Warning "IMENU_SYNC_TOKEN is not configured; skipping iMenu preview download sync."
+
+      - name: Save version
+        if: ${{ env.IMENU_SYNC_TOKEN != '' }}
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git commit -m "chore: bump printer version to $env:VERSION"
+          git push
