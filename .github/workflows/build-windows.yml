@@ -28,6 +28,19 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configure node-gyp Python
+        shell: pwsh
+        run: |
+          $python = (Get-Command python).Source
+          "PYTHON=$python" >> $env:GITHUB_ENV
+          "npm_config_python=$python" >> $env:GITHUB_ENV
+          python --version
+
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
