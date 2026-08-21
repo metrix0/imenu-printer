@@ -140,8 +140,6 @@ jobs:
           $releaseUrl = "https://github.com/metrix0/imenu-printer/releases/download/v$env:VERSION/$encodedFileName"
           $updatedAt = (Get-Date).ToUniversalTime().ToString("o")
 
-          # Only a tiny trigger crosses repositories. The iMenu repository then downloads
-          # and commits the EXE to preview using its own native GitHub Actions token.
           $trigger = [ordered]@{
             version = $env:VERSION
             updatedAt = $updatedAt
@@ -149,7 +147,7 @@ jobs:
           } | ConvertTo-Json -Compress
 
           $triggerBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($trigger))
-          $existingSha = gh api "repos/metrix0/imenu/contents/.github/printer-release-trigger.json?ref=preview" --jq ".sha" 2>$null
+          $existingSha = gh api "repos/metrix0/imenu/contents/.printer-release-trigger.json?ref=preview" --jq ".sha" 2>$null
           $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
 
           $payload = [ordered]@{
@@ -163,13 +161,14 @@ jobs:
 
           $payloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger.json"
           [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-          gh api --method PUT repos/metrix0/imenu/contents/.github/printer-release-trigger.json --input $payloadPath > $null
+          gh api --method PUT repos/metrix0/imenu/contents/.printer-release-trigger.json --input $payloadPath > $null
+          $triggerCode = $LASTEXITCODE
           Remove-Item $payloadPath -Force
-          if ($LASTEXITCODE -ne 0) {
+          if ($triggerCode -ne 0) {
+            "error=could not write preview trigger" >> $env:GITHUB_OUTPUT
             throw "Could not queue printer release sync on metrix0/imenu preview."
           }
 
-          # Wait until iMenu's preview-only workflow has committed both the real EXE and metadata.
           $synced = $false
           for ($attempt = 1; $attempt -le 48; $attempt++) {
             Start-Sleep -Seconds 5
