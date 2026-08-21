@@ -146,28 +146,58 @@ jobs:
             releaseUrl = $releaseUrl
           } | ConvertTo-Json -Compress
 
-          $triggerBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($trigger))
-          $existingSha = gh api "repos/metrix0/imenu/contents/.printer-release-trigger.json?ref=preview" --jq ".sha" 2>$null
-          $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
+          $syncRepo = Join-Path $env:RUNNER_TEMP "imenu-preview-trigger"
+          if (Test-Path $syncRepo) { Remove-Item $syncRepo -Recurse -Force }
 
-          $payload = [ordered]@{
-            message = "chore: queue printer download $env:VERSION"
-            content = $triggerBase64
-            branch = "preview"
-          }
-          if ($hasExisting) {
-            $payload.sha = $existingSha
+          git -c http.version=HTTP/1.1 clone --depth 1 --branch preview "https://metrix0:$env:GH_TOKEN@github.com/metrix0/imenu.git" $syncRepo
+          if ($LASTEXITCODE -ne 0) {
+            "error=could not clone imenu preview" >> $env:GITHUB_OUTPUT
+            throw "Could not clone metrix0/imenu preview."
           }
 
-          $payloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger.json"
-          [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-          gh api --method PUT repos/metrix0/imenu/contents/.printer-release-trigger.json --input $payloadPath > $null
-          $triggerCode = $LASTEXITCODE
-          Remove-Item $payloadPath -Force
-          if ($triggerCode -ne 0) {
-            "error=could not write preview trigger" >> $env:GITHUB_OUTPUT
-            throw "Could not queue printer release sync on metrix0/imenu preview."
+          Push-Location $syncRepo
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          [IO.File]::WriteAllText((Join-Path $syncRepo ".printer-release-trigger.json"), $trigger, [Text.UTF8Encoding]::new($false))
+          git add .printer-release-trigger.json
+          git diff --cached --quiet
+
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "chore: queue printer download $env:VERSION"
+            if ($LASTEXITCODE -ne 0) {
+              Pop-Location
+              "error=could not commit preview trigger" >> $env:GITHUB_OUTPUT
+              throw "Could not commit iMenu preview trigger."
+            }
+
+            $pushed = $false
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              if ($attempt -gt 1) {
+                git fetch origin preview
+                git rebase origin/preview
+                if ($LASTEXITCODE -ne 0) {
+                  Pop-Location
+                  "error=could not rebase preview trigger" >> $env:GITHUB_OUTPUT
+                  throw "Could not rebase iMenu preview trigger."
+                }
+              }
+
+              git -c http.version=HTTP/1.1 push origin HEAD:preview
+              if ($LASTEXITCODE -eq 0) {
+                $pushed = $true
+                break
+              }
+
+              Start-Sleep -Seconds (2 * $attempt)
+            }
+
+            if (-not $pushed) {
+              Pop-Location
+              "error=could not push preview trigger" >> $env:GITHUB_OUTPUT
+              throw "Could not push iMenu preview trigger after 5 attempts."
+            }
           }
+          Pop-Location
 
           $synced = $false
           for ($attempt = 1; $attempt -le 48; $attempt++) {
