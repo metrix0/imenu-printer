@@ -219,16 +219,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $phases = @(
-            @{ context = "printer-sync-token"; outcome = "${{ steps.verify_sync_token.outcome }}" },
-            @{ context = "printer-release"; outcome = "${{ steps.release.outcome }}" },
-            @{ context = "printer-preview-sync"; outcome = "${{ steps.sync_preview.outcome }}" }
-          )
-
-          foreach ($phase in $phases) {
-            $state = if ($phase.outcome -eq "success") { "success" } else { "failure" }
+          function Set-PhaseStatus($context, $outcome) {
+            $state = if ($outcome -eq "success") { "success" } else { "failure" }
             gh api --method POST "repos/${{ github.repository }}/statuses/${{ github.sha }}" `
-              -f state=$state `
-              -f context=$phase.context `
-              -f description=$phase.outcome
+              -f "state=$state" `
+              -f "context=$context" `
+              -f "description=$outcome"
           }
+
+          Set-PhaseStatus "printer-sync-token" "${{ steps.verify_sync_token.outcome }}"
+          Set-PhaseStatus "printer-release" "${{ steps.release.outcome }}"
+          Set-PhaseStatus "printer-preview-sync" "${{ steps.sync_preview.outcome }}"
