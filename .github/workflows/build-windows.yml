@@ -146,27 +146,43 @@ jobs:
             releaseUrl = $releaseUrl
           } | ConvertTo-Json -Compress
 
-          $existingSha = gh api "repos/metrix0/imenu/contents/.printer-release-trigger.json?ref=preview" --jq ".sha" 2>$null
-          $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
+          $queued = $false
+          $lastQueueError = ""
 
-          $payload = [ordered]@{
-            message = "chore: queue printer download $env:VERSION"
-            content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($trigger))
-            branch = "preview"
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            $existingSha = gh api "repos/metrix0/imenu/contents/.printer-release-trigger.json?ref=preview" --jq ".sha" 2>$null
+            $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
+
+            $payload = [ordered]@{
+              message = "chore: queue printer download $env:VERSION"
+              content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($trigger))
+              branch = "preview"
+            }
+            if ($hasExisting) {
+              $payload.sha = $existingSha
+            }
+
+            $payloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger.json"
+            [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+            $queueOutput = gh api --method PUT repos/metrix0/imenu/contents/.printer-release-trigger.json --input $payloadPath 2>&1
+            $queueCode = $LASTEXITCODE
+            Remove-Item $payloadPath -Force
+
+            if ($queueCode -eq 0) {
+              $queued = $true
+              break
+            }
+
+            $lastQueueError = ($queueOutput | Out-String).Trim()
+            Write-Host $lastQueueError
+            Start-Sleep -Seconds (2 * $attempt)
           }
-          if ($hasExisting) {
-            $payload.sha = $existingSha
-          }
 
-          $payloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger.json"
-          [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-          gh api --method PUT repos/metrix0/imenu/contents/.printer-release-trigger.json --input $payloadPath > $null
-          $queueCode = $LASTEXITCODE
-          Remove-Item $payloadPath -Force
-
-          if ($queueCode -ne 0) {
-            "error=could not update preview trigger" >> $env:GITHUB_OUTPUT
-            throw "Could not update metrix0/imenu preview trigger."
+          if (-not $queued) {
+            $summary = ($lastQueueError -replace '[\r\n]+', ' ')
+            if ($summary.Length -gt 110) { $summary = $summary.Substring(0, 110) }
+            "error=queue failed: $summary" >> $env:GITHUB_OUTPUT
+            throw "Could not update metrix0/imenu preview trigger after 5 attempts. $summary"
           }
 
           $synced = $false
