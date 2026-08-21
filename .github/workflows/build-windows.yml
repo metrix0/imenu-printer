@@ -12,6 +12,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: printer-release-main
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: windows-2022
@@ -84,6 +88,23 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "v$env:VERSION" --draft=false
 
+      - name: Save build
+        uses: actions/upload-artifact@v4
+        with:
+          name: imenu-printer-${{ env.VERSION }}
+          path: dist/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Save version
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git commit -m "chore: bump printer version to $env:VERSION"
+          git push
+
       - name: Checkout iMenu preview
         if: ${{ env.IMENU_SYNC_TOKEN != '' }}
         uses: actions/checkout@v4
@@ -92,6 +113,19 @@ jobs:
           ref: preview
           token: ${{ secrets.IMENU_SYNC_TOKEN }}
           path: imenu-preview
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Verify iMenu preview write access
+        if: ${{ env.IMENU_SYNC_TOKEN != '' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
+        run: |
+          $canPush = gh api repos/metrix0/imenu --jq ".permissions.push"
+          if ($canPush -ne "true") {
+            throw "IMENU_SYNC_TOKEN does not have write access to metrix0/imenu. The token must include metrix0/imenu with Contents: Read and write."
+          }
 
       - name: Sync installer to iMenu preview
         if: ${{ env.IMENU_SYNC_TOKEN != '' }}
@@ -125,7 +159,28 @@ jobs:
 
           if ($LASTEXITCODE -ne 0) {
             git commit -m "chore: update printer download to $env:VERSION"
-            git push origin HEAD:preview
+
+            $pushed = $false
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              git fetch origin preview
+              git rebase origin/preview
+
+              if ($LASTEXITCODE -ne 0) {
+                throw "Could not rebase printer download update onto the latest preview branch."
+              }
+
+              git push origin HEAD:preview
+              if ($LASTEXITCODE -eq 0) {
+                $pushed = $true
+                break
+              }
+
+              Start-Sleep -Seconds (2 * $attempt)
+            }
+
+            if (-not $pushed) {
+              throw "Could not push printer download update to preview after 5 attempts."
+            }
           }
 
           Pop-Location
@@ -134,22 +189,3 @@ jobs:
         if: ${{ env.IMENU_SYNC_TOKEN == '' }}
         shell: pwsh
         run: Write-Warning "IMENU_SYNC_TOKEN is not configured; skipping iMenu preview download sync."
-
-      - name: Save build
-        uses: actions/upload-artifact@v4
-        with:
-          name: imenu-printer-${{ env.VERSION }}
-          path: dist/**
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Save version
-        shell: pwsh
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json
-          git commit -m "chore: bump printer version to $env:VERSION"
-          git push
-
-# trigger build 2
