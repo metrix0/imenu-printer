@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: write
+  statuses: write
 
 concurrency:
   group: printer-release-main
@@ -28,11 +29,15 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Verify iMenu sync token
-        if: ${{ env.IMENU_SYNC_TOKEN != '' }}
+        id: verify_sync_token
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
         run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw "IMENU_SYNC_TOKEN is missing from metrix0/imenu-printer Actions secrets."
+          }
+
           $canPush = gh api repos/metrix0/imenu --jq ".permissions.push"
           Write-Host "Effective push permission to metrix0/imenu: $canPush"
           if ($canPush -ne "true") {
@@ -95,6 +100,7 @@ jobs:
           "VERSION=$next" >> $env:GITHUB_ENV
 
       - name: Build or reuse installer release
+        id: release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -124,7 +130,6 @@ jobs:
           retention-days: 30
 
       - name: Checkout iMenu preview
-        if: ${{ env.IMENU_SYNC_TOKEN != '' }}
         uses: actions/checkout@v4
         with:
           repository: metrix0/imenu
@@ -135,7 +140,7 @@ jobs:
           persist-credentials: false
 
       - name: Sync installer to iMenu preview
-        if: ${{ env.IMENU_SYNC_TOKEN != '' }}
+        id: sync_preview
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
@@ -195,13 +200,7 @@ jobs:
 
           Pop-Location
 
-      - name: Preview sync not configured
-        if: ${{ env.IMENU_SYNC_TOKEN == '' }}
-        shell: pwsh
-        run: Write-Warning "IMENU_SYNC_TOKEN is not configured; skipping iMenu preview download sync."
-
       - name: Save version
-        if: ${{ env.IMENU_SYNC_TOKEN != '' }}
         shell: pwsh
         run: |
           git config user.name "github-actions[bot]"
@@ -213,3 +212,20 @@ jobs:
             git commit -m "chore: bump printer version to $env:VERSION"
             git push
           }
+
+      - name: Report sync result
+        if: ${{ always() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $verify = "${{ steps.verify_sync_token.outcome }}"
+          $release = "${{ steps.release.outcome }}"
+          $sync = "${{ steps.sync_preview.outcome }}"
+          $state = if ($sync -eq "success") { "success" } else { "failure" }
+          $description = "verify=$verify release=$release sync=$sync"
+
+          gh api --method POST "repos/${{ github.repository }}/statuses/${{ github.sha }}" `
+            -f state=$state `
+            -f context="printer-preview-sync" `
+            -f description=$description
