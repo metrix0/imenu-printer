@@ -129,7 +129,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Trigger and verify iMenu preview sync
+      - name: Dispatch and verify iMenu preview sync
         id: sync_preview
         shell: pwsh
         env:
@@ -140,94 +140,24 @@ jobs:
           $releaseUrl = "https://github.com/metrix0/imenu-printer/releases/download/v$env:VERSION/$encodedFileName"
           $updatedAt = (Get-Date).ToUniversalTime().ToString("o")
 
-          $trigger = [ordered]@{
-            version = $env:VERSION
-            updatedAt = $updatedAt
-            releaseUrl = $releaseUrl
-          } | ConvertTo-Json -Compress
-
-          $triggerPayloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger-blob.json"
-          $triggerPayload = @{
-            content = $trigger
-            encoding = "utf-8"
-          } | ConvertTo-Json -Compress
-          [IO.File]::WriteAllText($triggerPayloadPath, $triggerPayload, [Text.UTF8Encoding]::new($false))
-          $triggerBlob = gh api --method POST repos/metrix0/imenu/git/blobs --input $triggerPayloadPath --jq ".sha"
-          Remove-Item $triggerPayloadPath -Force
-          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($triggerBlob)) {
-            "error=could not create preview trigger blob" >> $env:GITHUB_OUTPUT
-            throw "Could not create iMenu preview trigger blob."
-          }
-
-          $queued = $false
-          for ($attempt = 1; $attempt -le 5; $attempt++) {
-            $baseCommit = gh api repos/metrix0/imenu/git/ref/heads/preview --jq ".object.sha"
-            if ($LASTEXITCODE -ne 0) {
-              "error=could not read preview ref" >> $env:GITHUB_OUTPUT
-              throw "Could not read iMenu preview ref."
+          $dispatchPayload = [ordered]@{
+            event_type = "printer-release"
+            client_payload = [ordered]@{
+              version = $env:VERSION
+              release_url = $releaseUrl
+              updated_at = $updatedAt
             }
+          } | ConvertTo-Json -Depth 5 -Compress
 
-            $baseTree = gh api "repos/metrix0/imenu/git/commits/$baseCommit" --jq ".tree.sha"
-            if ($LASTEXITCODE -ne 0) {
-              "error=could not read preview tree" >> $env:GITHUB_OUTPUT
-              throw "Could not read iMenu preview tree."
-            }
+          $dispatchPath = Join-Path $env:RUNNER_TEMP "imenu-printer-dispatch.json"
+          [IO.File]::WriteAllText($dispatchPath, $dispatchPayload, [Text.UTF8Encoding]::new($false))
+          gh api --method POST repos/metrix0/imenu/dispatches --input $dispatchPath
+          $dispatchCode = $LASTEXITCODE
+          Remove-Item $dispatchPath -Force
 
-            $treePath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger-tree.json"
-            $treePayload = @{
-              base_tree = $baseTree
-              tree = @(
-                @{
-                  path = ".printer-release-trigger.json"
-                  mode = "100644"
-                  type = "blob"
-                  sha = $triggerBlob
-                }
-              )
-            } | ConvertTo-Json -Depth 5 -Compress
-            [IO.File]::WriteAllText($treePath, $treePayload, [Text.UTF8Encoding]::new($false))
-            $newTree = gh api --method POST repos/metrix0/imenu/git/trees --input $treePath --jq ".sha"
-            Remove-Item $treePath -Force
-            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($newTree)) {
-              "error=could not create preview trigger tree" >> $env:GITHUB_OUTPUT
-              throw "Could not create iMenu preview trigger tree."
-            }
-
-            $commitPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger-commit.json"
-            $commitPayload = @{
-              message = "chore: queue printer download $env:VERSION"
-              tree = $newTree
-              parents = @($baseCommit)
-            } | ConvertTo-Json -Depth 4 -Compress
-            [IO.File]::WriteAllText($commitPath, $commitPayload, [Text.UTF8Encoding]::new($false))
-            $newCommit = gh api --method POST repos/metrix0/imenu/git/commits --input $commitPath --jq ".sha"
-            Remove-Item $commitPath -Force
-            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($newCommit)) {
-              "error=could not create preview trigger commit" >> $env:GITHUB_OUTPUT
-              throw "Could not create iMenu preview trigger commit."
-            }
-
-            $refPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger-ref.json"
-            $refPayload = @{
-              sha = $newCommit
-              force = $false
-            } | ConvertTo-Json -Compress
-            [IO.File]::WriteAllText($refPath, $refPayload, [Text.UTF8Encoding]::new($false))
-            gh api --method PATCH repos/metrix0/imenu/git/refs/heads/preview --input $refPath > $null 2>&1
-            $refCode = $LASTEXITCODE
-            Remove-Item $refPath -Force
-
-            if ($refCode -eq 0) {
-              $queued = $true
-              break
-            }
-
-            Start-Sleep -Seconds (2 * $attempt)
-          }
-
-          if (-not $queued) {
-            "error=could not advance preview ref with trigger" >> $env:GITHUB_OUTPUT
-            throw "Could not queue iMenu preview trigger after 5 attempts."
+          if ($dispatchCode -ne 0) {
+            "error=could not dispatch printer release to imenu" >> $env:GITHUB_OUTPUT
+            throw "Could not dispatch printer release to metrix0/imenu."
           }
 
           $synced = $false
