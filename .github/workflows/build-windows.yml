@@ -146,58 +146,89 @@ jobs:
             releaseUrl = $releaseUrl
           } | ConvertTo-Json -Compress
 
-          $syncRepo = Join-Path $env:RUNNER_TEMP "imenu-preview-trigger"
-          if (Test-Path $syncRepo) { Remove-Item $syncRepo -Recurse -Force }
-
-          git -c http.version=HTTP/1.1 clone --depth 1 --branch preview "https://metrix0:$env:GH_TOKEN@github.com/metrix0/imenu.git" $syncRepo
-          if ($LASTEXITCODE -ne 0) {
-            "error=could not clone imenu preview" >> $env:GITHUB_OUTPUT
-            throw "Could not clone metrix0/imenu preview."
+          $triggerPayloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger-blob.json"
+          $triggerPayload = @{
+            content = $trigger
+            encoding = "utf-8"
+          } | ConvertTo-Json -Compress
+          [IO.File]::WriteAllText($triggerPayloadPath, $triggerPayload, [Text.UTF8Encoding]::new($false))
+          $triggerBlob = gh api --method POST repos/metrix0/imenu/git/blobs --input $triggerPayloadPath --jq ".sha"
+          Remove-Item $triggerPayloadPath -Force
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($triggerBlob)) {
+            "error=could not create preview trigger blob" >> $env:GITHUB_OUTPUT
+            throw "Could not create iMenu preview trigger blob."
           }
 
-          Push-Location $syncRepo
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          [IO.File]::WriteAllText((Join-Path $syncRepo ".printer-release-trigger.json"), $trigger, [Text.UTF8Encoding]::new($false))
-          git add .printer-release-trigger.json
-          git diff --cached --quiet
-
-          if ($LASTEXITCODE -ne 0) {
-            git commit -m "chore: queue printer download $env:VERSION"
+          $queued = $false
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            $baseCommit = gh api repos/metrix0/imenu/git/ref/heads/preview --jq ".object.sha"
             if ($LASTEXITCODE -ne 0) {
-              Pop-Location
-              "error=could not commit preview trigger" >> $env:GITHUB_OUTPUT
-              throw "Could not commit iMenu preview trigger."
+              "error=could not read preview ref" >> $env:GITHUB_OUTPUT
+              throw "Could not read iMenu preview ref."
             }
 
-            $pushed = $false
-            for ($attempt = 1; $attempt -le 5; $attempt++) {
-              if ($attempt -gt 1) {
-                git fetch origin preview
-                git rebase origin/preview
-                if ($LASTEXITCODE -ne 0) {
-                  Pop-Location
-                  "error=could not rebase preview trigger" >> $env:GITHUB_OUTPUT
-                  throw "Could not rebase iMenu preview trigger."
+            $baseTree = gh api "repos/metrix0/imenu/git/commits/$baseCommit" --jq ".tree.sha"
+            if ($LASTEXITCODE -ne 0) {
+              "error=could not read preview tree" >> $env:GITHUB_OUTPUT
+              throw "Could not read iMenu preview tree."
+            }
+
+            $treePath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger-tree.json"
+            $treePayload = @{
+              base_tree = $baseTree
+              tree = @(
+                @{
+                  path = ".printer-release-trigger.json"
+                  mode = "100644"
+                  type = "blob"
+                  sha = $triggerBlob
                 }
-              }
-
-              git -c http.version=HTTP/1.1 push origin HEAD:preview
-              if ($LASTEXITCODE -eq 0) {
-                $pushed = $true
-                break
-              }
-
-              Start-Sleep -Seconds (2 * $attempt)
+              )
+            } | ConvertTo-Json -Depth 5 -Compress
+            [IO.File]::WriteAllText($treePath, $treePayload, [Text.UTF8Encoding]::new($false))
+            $newTree = gh api --method POST repos/metrix0/imenu/git/trees --input $treePath --jq ".sha"
+            Remove-Item $treePath -Force
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($newTree)) {
+              "error=could not create preview trigger tree" >> $env:GITHUB_OUTPUT
+              throw "Could not create iMenu preview trigger tree."
             }
 
-            if (-not $pushed) {
-              Pop-Location
-              "error=could not push preview trigger" >> $env:GITHUB_OUTPUT
-              throw "Could not push iMenu preview trigger after 5 attempts."
+            $commitPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger-commit.json"
+            $commitPayload = @{
+              message = "chore: queue printer download $env:VERSION"
+              tree = $newTree
+              parents = @($baseCommit)
+            } | ConvertTo-Json -Depth 4 -Compress
+            [IO.File]::WriteAllText($commitPath, $commitPayload, [Text.UTF8Encoding]::new($false))
+            $newCommit = gh api --method POST repos/metrix0/imenu/git/commits --input $commitPath --jq ".sha"
+            Remove-Item $commitPath -Force
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($newCommit)) {
+              "error=could not create preview trigger commit" >> $env:GITHUB_OUTPUT
+              throw "Could not create iMenu preview trigger commit."
             }
+
+            $refPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger-ref.json"
+            $refPayload = @{
+              sha = $newCommit
+              force = $false
+            } | ConvertTo-Json -Compress
+            [IO.File]::WriteAllText($refPath, $refPayload, [Text.UTF8Encoding]::new($false))
+            gh api --method PATCH repos/metrix0/imenu/git/refs/heads/preview --input $refPath > $null 2>&1
+            $refCode = $LASTEXITCODE
+            Remove-Item $refPath -Force
+
+            if ($refCode -eq 0) {
+              $queued = $true
+              break
+            }
+
+            Start-Sleep -Seconds (2 * $attempt)
           }
-          Pop-Location
+
+          if (-not $queued) {
+            "error=could not advance preview ref with trigger" >> $env:GITHUB_OUTPUT
+            throw "Could not queue iMenu preview trigger after 5 attempts."
+          }
 
           $synced = $false
           for ($attempt = 1; $attempt -le 48; $attempt++) {
