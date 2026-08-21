@@ -17,6 +17,7 @@ jobs:
     runs-on: windows-2022
     env:
       npm_config_msvs_version: 2022
+      IMENU_SYNC_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
 
     steps:
       - name: Checkout
@@ -82,6 +83,57 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release edit "v$env:VERSION" --draft=false
+
+      - name: Checkout iMenu preview
+        if: ${{ env.IMENU_SYNC_TOKEN != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: metrix0/imenu
+          ref: preview
+          token: ${{ secrets.IMENU_SYNC_TOKEN }}
+          path: imenu-preview
+
+      - name: Sync installer to iMenu preview
+        if: ${{ env.IMENU_SYNC_TOKEN != '' }}
+        shell: pwsh
+        run: |
+          $fileName = "iMenu Impressora Setup $env:VERSION.exe"
+          $source = Join-Path "dist" $fileName
+          $targetDir = Join-Path "imenu-preview" "public/downloads"
+          $target = Join-Path $targetDir $fileName
+
+          if (-not (Test-Path $source)) {
+            throw "Installer not found: $source"
+          }
+
+          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+          Copy-Item $source $target -Force
+
+          $metadata = [ordered]@{
+            version = $env:VERSION
+            updatedAt = (Get-Date).ToUniversalTime().ToString("o")
+            downloadUrl = "/downloads/$([uri]::EscapeDataString($fileName))"
+          } | ConvertTo-Json
+
+          Set-Content -Path (Join-Path $targetDir "imenu-printer.json") -Value $metadata -Encoding utf8NoBOM
+
+          Push-Location "imenu-preview"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "public/downloads/$fileName" "public/downloads/imenu-printer.json"
+          git diff --cached --quiet
+
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "chore: update printer download to $env:VERSION"
+            git push origin HEAD:preview
+          }
+
+          Pop-Location
+
+      - name: Preview sync not configured
+        if: ${{ env.IMENU_SYNC_TOKEN == '' }}
+        shell: pwsh
+        run: Write-Warning "IMENU_SYNC_TOKEN is not configured; skipping iMenu preview download sync."
 
       - name: Save build
         uses: actions/upload-artifact@v4
