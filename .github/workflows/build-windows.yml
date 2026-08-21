@@ -129,17 +129,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Checkout iMenu preview
-        uses: actions/checkout@v4
-        with:
-          repository: metrix0/imenu
-          ref: preview
-          token: ${{ secrets.IMENU_SYNC_TOKEN }}
-          path: imenu-preview
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Sync installer to iMenu preview
+      - name: Sync installer and metadata to iMenu preview
         id: sync_preview
         shell: pwsh
         env:
@@ -147,29 +137,22 @@ jobs:
         run: |
           $fileName = "iMenu Impressora Setup $env:VERSION.exe"
           $source = Join-Path "dist" $fileName
-          $targetDir = Join-Path "imenu-preview" "public/downloads"
-          $target = Join-Path $targetDir $fileName
 
           if (-not (Test-Path $source)) {
             throw "Installer not found: $source"
           }
 
-          Push-Location "imenu-preview"
-          git remote set-url origin "https://metrix0:$env:GH_TOKEN@github.com/metrix0/imenu.git"
-          git config http.version HTTP/1.1
-          git config http.postBuffer 524288000
-          git config http.lowSpeedLimit 0
-          git config http.lowSpeedTime 999999
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git fetch origin preview
-          if ($LASTEXITCODE -ne 0) { throw "Could not fetch latest iMenu preview." }
-          git reset --hard origin/preview
-          Pop-Location
-
-          New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-          Copy-Item $source $target -Force
+          # Upload the EXE directly as a Git blob. This bypasses cross-repo git push/auth/pack issues.
+          $blobPayloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-exe-blob.json"
+          $base64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($source))
+          $blobPayload = '{"content":"' + $base64 + '","encoding":"base64"}'
+          [IO.File]::WriteAllText($blobPayloadPath, $blobPayload, [Text.UTF8Encoding]::new($false))
+          $exeBlobSha = gh api --method POST repos/metrix0/imenu/git/blobs --input $blobPayloadPath --jq ".sha"
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($exeBlobSha)) {
+            throw "Could not upload installer blob to metrix0/imenu."
+          }
+          Remove-Item $blobPayloadPath -Force
+          Remove-Variable base64
 
           $metadata = [ordered]@{
             version = $env:VERSION
@@ -177,49 +160,95 @@ jobs:
             downloadUrl = "/downloads/$([uri]::EscapeDataString($fileName))"
           } | ConvertTo-Json
 
-          Set-Content -Path (Join-Path $targetDir "imenu-printer.json") -Value $metadata -Encoding utf8NoBOM
+          $metadataPayloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-metadata-blob.json"
+          $metadataPayload = @{
+            content = $metadata
+            encoding = "utf-8"
+          } | ConvertTo-Json -Compress
+          [IO.File]::WriteAllText($metadataPayloadPath, $metadataPayload, [Text.UTF8Encoding]::new($false))
+          $metadataBlobSha = gh api --method POST repos/metrix0/imenu/git/blobs --input $metadataPayloadPath --jq ".sha"
+          if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($metadataBlobSha)) {
+            throw "Could not upload printer metadata blob to metrix0/imenu."
+          }
+          Remove-Item $metadataPayloadPath -Force
 
-          Push-Location "imenu-preview"
-          git add "public/downloads/$fileName" "public/downloads/imenu-printer.json"
-          git diff --cached --quiet
+          $synced = $false
+          $lastError = ""
 
-          if ($LASTEXITCODE -ne 0) {
-            git commit -m "chore: update printer download to $env:VERSION"
-            if ($LASTEXITCODE -ne 0) { throw "Could not create iMenu preview download commit." }
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            $baseCommit = gh api repos/metrix0/imenu/git/ref/heads/preview --jq ".object.sha"
+            if ($LASTEXITCODE -ne 0) { throw "Could not read iMenu preview ref." }
 
-            $pushed = $false
-            $lastPushOutput = ""
-            for ($attempt = 1; $attempt -le 5; $attempt++) {
-              if ($attempt -gt 1) {
-                git fetch origin preview
-                if ($LASTEXITCODE -ne 0) { throw "Could not refresh iMenu preview before retry." }
-                git rebase origin/preview
-                if ($LASTEXITCODE -ne 0) { throw "Could not rebase printer download update onto latest preview." }
-              }
+            $baseTree = gh api "repos/metrix0/imenu/git/commits/$baseCommit" --jq ".tree.sha"
+            if ($LASTEXITCODE -ne 0) { throw "Could not read iMenu preview tree." }
 
-              $pushLines = git -c http.version=HTTP/1.1 push origin HEAD:preview 2>&1
-              $pushCode = $LASTEXITCODE
-              $lastPushOutput = ($pushLines | Out-String).Trim()
-              Write-Host $lastPushOutput
-
-              if ($pushCode -eq 0) {
-                $pushed = $true
-                break
-              }
-
-              Start-Sleep -Seconds (3 * $attempt)
+            $treePayloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-tree.json"
+            $treePayload = @{
+              base_tree = $baseTree
+              tree = @(
+                @{
+                  path = "public/downloads/$fileName"
+                  mode = "100644"
+                  type = "blob"
+                  sha = $exeBlobSha
+                },
+                @{
+                  path = "public/downloads/imenu-printer.json"
+                  mode = "100644"
+                  type = "blob"
+                  sha = $metadataBlobSha
+                }
+              )
+            } | ConvertTo-Json -Depth 6 -Compress
+            [IO.File]::WriteAllText($treePayloadPath, $treePayload, [Text.UTF8Encoding]::new($false))
+            $newTree = gh api --method POST repos/metrix0/imenu/git/trees --input $treePayloadPath --jq ".sha"
+            Remove-Item $treePayloadPath -Force
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($newTree)) {
+              throw "Could not create iMenu preview tree."
             }
 
-            if (-not $pushed) {
-              $summary = ($lastPushOutput -replace '[\r\n]+', ' ')
-              if ($summary.Length -gt 110) { $summary = $summary.Substring(0, 110) }
-              "error=$summary" >> $env:GITHUB_OUTPUT
-              throw "Could not push printer download update to preview after 5 attempts. $summary"
+            $commitPayloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-commit.json"
+            $commitPayload = @{
+              message = "chore: update printer download to $env:VERSION"
+              tree = $newTree
+              parents = @($baseCommit)
+            } | ConvertTo-Json -Depth 4 -Compress
+            [IO.File]::WriteAllText($commitPayloadPath, $commitPayload, [Text.UTF8Encoding]::new($false))
+            $newCommit = gh api --method POST repos/metrix0/imenu/git/commits --input $commitPayloadPath --jq ".sha"
+            Remove-Item $commitPayloadPath -Force
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($newCommit)) {
+              throw "Could not create iMenu preview commit."
             }
+
+            $refPayloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-ref.json"
+            $refPayload = @{
+              sha = $newCommit
+              force = $false
+            } | ConvertTo-Json -Compress
+            [IO.File]::WriteAllText($refPayloadPath, $refPayload, [Text.UTF8Encoding]::new($false))
+
+            $refOutput = gh api --method PATCH repos/metrix0/imenu/git/refs/heads/preview --input $refPayloadPath 2>&1
+            $refCode = $LASTEXITCODE
+            Remove-Item $refPayloadPath -Force
+
+            if ($refCode -eq 0) {
+              $synced = $true
+              break
+            }
+
+            $lastError = ($refOutput | Out-String).Trim()
+            Write-Host "Preview moved while syncing; retrying ($attempt/5)."
+            Start-Sleep -Seconds (2 * $attempt)
+          }
+
+          if (-not $synced) {
+            $summary = ($lastError -replace '[\r\n]+', ' ')
+            if ($summary.Length -gt 110) { $summary = $summary.Substring(0, 110) }
+            "error=$summary" >> $env:GITHUB_OUTPUT
+            throw "Could not update iMenu preview ref after 5 attempts. $summary"
           }
 
           "error=" >> $env:GITHUB_OUTPUT
-          Pop-Location
 
       - name: Save version
         shell: pwsh
