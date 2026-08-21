@@ -151,3 +151,5 @@ jobs:
           git add package.json package-lock.json
           git commit -m "chore: bump printer version to $env:VERSION"
           git push
+
+# trigger build
