@@ -45,6 +45,26 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Reset failed version chain
+        if: ${{ contains(github.event.head_commit.message, '[reset-1.0.8]') }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          foreach ($tag in @("v1.0.9", "v1.1.0", "v1.1.1", "v1.1.2")) {
+            gh release view $tag --json tagName *> $null
+            if ($LASTEXITCODE -eq 0) {
+              gh release delete $tag --cleanup-tag --yes
+            }
+
+            $remoteTag = git ls-remote --tags origin "refs/tags/$tag"
+            if ($remoteTag) {
+              git push origin ":refs/tags/$tag"
+            }
+          }
+
+          npm version 1.0.8 --no-git-tag-version
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -68,25 +88,8 @@ jobs:
 
       - name: Increment version
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          $packageVersion = node -p "require('./package.json').version"
-          $versions = @($packageVersion)
-
-          $releases = gh release list --limit 100 --json tagName | ConvertFrom-Json
-          foreach ($release in $releases) {
-            $version = $release.tagName -replace '^v', ''
-            if ($version -match '^\d+\.\d+\.\d+$') {
-              $versions += $version
-            }
-          }
-
-          $current = $versions | Sort-Object -Descending -Property @{ Expression = {
-            $p = $_.Split('.')
-            ([int]$p[0] * 100) + ([int]$p[1] * 10) + [int]$p[2]
-          }} | Select-Object -First 1
-
+          $current = node -p "require('./package.json').version"
           $parts = $current.Split('.')
           $major = [int]$parts[0]
           $minor = [int]$parts[1]
@@ -159,6 +162,8 @@ jobs:
       - name: Sync installer to iMenu preview
         if: ${{ env.IMENU_SYNC_TOKEN != '' }}
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
         run: |
           $fileName = "iMenu Impressora Setup $env:VERSION.exe"
           $source = Join-Path "dist" $fileName
@@ -218,5 +223,3 @@ jobs:
         if: ${{ env.IMENU_SYNC_TOKEN == '' }}
         shell: pwsh
         run: Write-Warning "IMENU_SYNC_TOKEN is not configured; skipping iMenu preview download sync."
-
-# trigger
