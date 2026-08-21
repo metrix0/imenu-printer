@@ -129,7 +129,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Queue and verify iMenu preview sync
+      - name: Trigger and verify iMenu preview sync
         id: sync_preview
         shell: pwsh
         env:
@@ -140,15 +140,35 @@ jobs:
           $releaseUrl = "https://github.com/metrix0/imenu-printer/releases/download/v$env:VERSION/$encodedFileName"
           $updatedAt = (Get-Date).ToUniversalTime().ToString("o")
 
+          $dispatchPayload = [ordered]@{
+            event_type = "printer-release"
+            client_payload = [ordered]@{
+              version = $env:VERSION
+              release_url = $releaseUrl
+              updated_at = $updatedAt
+            }
+          } | ConvertTo-Json -Depth 5 -Compress
+
+          $dispatchPath = Join-Path $env:RUNNER_TEMP "imenu-printer-dispatch.json"
+          [IO.File]::WriteAllText($dispatchPath, $dispatchPayload, [Text.UTF8Encoding]::new($false))
+          $dispatchOutput = gh api --method POST repos/metrix0/imenu/dispatches --input $dispatchPath 2>&1
+          $dispatchCode = $LASTEXITCODE
+          Remove-Item $dispatchPath -Force
+
+          if ($dispatchCode -eq 0) {
+            Write-Host "Repository dispatch queued successfully."
+          }
+          else {
+            Write-Warning (($dispatchOutput | Out-String).Trim())
+          }
+
           $trigger = [ordered]@{
             version = $env:VERSION
             updatedAt = $updatedAt
             releaseUrl = $releaseUrl
           } | ConvertTo-Json -Compress
 
-          $queued = $false
-          $lastQueueError = ""
-
+          $triggerQueued = $false
           for ($attempt = 1; $attempt -le 5; $attempt++) {
             $existingSha = gh api "repos/metrix0/imenu/contents/.printer-release-trigger.json?ref=preview" --jq ".sha" 2>$null
             $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
@@ -164,29 +184,26 @@ jobs:
 
             $payloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger.json"
             [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-            $queueOutput = gh api --method PUT repos/metrix0/imenu/contents/.printer-release-trigger.json --input $payloadPath 2>&1
-            $queueCode = $LASTEXITCODE
+            $triggerOutput = gh api --method PUT repos/metrix0/imenu/contents/.printer-release-trigger.json --input $payloadPath 2>&1
+            $triggerCode = $LASTEXITCODE
             Remove-Item $payloadPath -Force
 
-            if ($queueCode -eq 0) {
-              $queued = $true
+            if ($triggerCode -eq 0) {
+              $triggerQueued = $true
+              Write-Host "Preview trigger updated successfully."
               break
             }
 
-            $lastQueueError = ($queueOutput | Out-String).Trim()
-            Write-Host $lastQueueError
+            Write-Warning (($triggerOutput | Out-String).Trim())
             Start-Sleep -Seconds (2 * $attempt)
           }
 
-          if (-not $queued) {
-            $summary = ($lastQueueError -replace '[\r\n]+', ' ')
-            if ($summary.Length -gt 110) { $summary = $summary.Substring(0, 110) }
-            "error=queue failed: $summary" >> $env:GITHUB_OUTPUT
-            throw "Could not update metrix0/imenu preview trigger after 5 attempts. $summary"
+          if ($dispatchCode -ne 0 -and -not $triggerQueued) {
+            Write-Warning "Both immediate sync triggers failed; waiting for iMenu's scheduled fallback."
           }
 
           $synced = $false
-          for ($attempt = 1; $attempt -le 48; $attempt++) {
+          for ($attempt = 1; $attempt -le 72; $attempt++) {
             Start-Sleep -Seconds 5
 
             $metadataContent = gh api "repos/metrix0/imenu/contents/public/downloads/imenu-printer.json?ref=preview" --jq ".content" 2>$null
@@ -215,8 +232,8 @@ jobs:
           }
 
           if (-not $synced) {
-            "error=iMenu preview did not publish the EXE within 4 minutes" >> $env:GITHUB_OUTPUT
-            throw "iMenu preview did not publish $fileName within 4 minutes."
+            "error=iMenu preview did not publish the EXE within 6 minutes" >> $env:GITHUB_OUTPUT
+            throw "iMenu preview did not publish $fileName within 6 minutes."
           }
 
           "error=" >> $env:GITHUB_OUTPUT
