@@ -27,6 +27,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Verify iMenu sync token
+        if: ${{ env.IMENU_SYNC_TOKEN != '' }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
+        run: |
+          $canPush = gh api repos/metrix0/imenu --jq ".permissions.push"
+          Write-Host "Effective push permission to metrix0/imenu: $canPush"
+          if ($canPush -ne "true") {
+            throw "IMENU_SYNC_TOKEN is present, but GitHub reports push=false for metrix0/imenu."
+          }
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -114,18 +126,18 @@ jobs:
           token: ${{ secrets.IMENU_SYNC_TOKEN }}
           path: imenu-preview
           fetch-depth: 0
-          persist-credentials: true
+          persist-credentials: false
 
-      - name: Verify iMenu preview write access
+      - name: Configure iMenu push authentication
         if: ${{ env.IMENU_SYNC_TOKEN != '' }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
         run: |
-          $canPush = gh api repos/metrix0/imenu --jq ".permissions.push"
-          if ($canPush -ne "true") {
-            throw "IMENU_SYNC_TOKEN does not have write access to metrix0/imenu. The token must include metrix0/imenu with Contents: Read and write."
-          }
+          Push-Location "imenu-preview"
+          gh auth setup-git
+          git remote set-url origin https://github.com/metrix0/imenu.git
+          Pop-Location
 
       - name: Sync installer to iMenu preview
         if: ${{ env.IMENU_SYNC_TOKEN != '' }}
