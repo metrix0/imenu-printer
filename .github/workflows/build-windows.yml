@@ -230,7 +230,7 @@ jobs:
               continue
             }
 
-            $exeSize = gh api "repos/metrix0/imenu/contents/public/downloads/$encodedFileName?ref=preview" --jq ".size" 2>$null
+            $exeSize = gh api "repos/metrix0/imenu/contents/public/downloads?ref=preview" --jq ".[] | select(.name == `"$fileName`") | .size" 2>$null
             if ($LASTEXITCODE -eq 0 -and [int64]$exeSize -gt 1000000) {
               $synced = $true
               break
@@ -244,6 +244,8 @@ jobs:
           else {
             "error=" >> $env:GITHUB_OUTPUT
           }
+
+          $global:LASTEXITCODE = 0
 
       - name: Save version
         shell: pwsh
