@@ -232,11 +232,12 @@ jobs:
           }
 
           if (-not $synced) {
-            "error=iMenu preview did not publish the EXE within 6 minutes" >> $env:GITHUB_OUTPUT
-            throw "iMenu preview did not publish $fileName within 6 minutes."
+            "error=immediate sync unavailable; scheduled fallback pending" >> $env:GITHUB_OUTPUT
+            Write-Warning "iMenu preview did not publish $fileName within 6 minutes. The installer release is valid; iMenu's scheduled sync will retry it."
           }
-
-          "error=" >> $env:GITHUB_OUTPUT
+          else {
+            "error=" >> $env:GITHUB_OUTPUT
+          }
 
       - name: Save version
         shell: pwsh
