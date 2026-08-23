@@ -636,6 +636,10 @@ function isPickupOrder(order) {
         value === '0'
 }
 
+function isTableOrder(order) {
+    return String(order?.is_delivery ?? '').trim().toLowerCase() === 'mesa'
+}
+
 function paymentLabel(method) {
     const paymentMap = {
         dinheiro: 'Dinheiro',
@@ -661,6 +665,7 @@ async function buildReceipt(supabase, orderId) {
           customer_address,
           payment_method,
           is_delivery,
+          table_name_snapshot,
           subtotal_cents,
           delivery_cents,
           coupon_discount_cents,
@@ -713,6 +718,7 @@ async function buildReceipt(supabase, orderId) {
         subitemsByOrderItem[subitem.order_item_id].push(subitem)
     }
 
+    const tableOrder = isTableOrder(order)
     const pickup = isPickupOrder(order)
     const separator = '-'.repeat(RECEIPT_WIDTH)
     const scheduledDate = order.scheduled_for ? new Date(order.scheduled_for) : null
@@ -747,22 +753,26 @@ async function buildReceipt(supabase, orderId) {
     }
 
     text += `Hora: ${new Date(order.created_at).toLocaleString('pt-BR')}\n`
-    text += `Tipo: ${pickup ? 'Retirada' : 'Entrega'}\n`
+    text += `Tipo: ${tableOrder ? 'Mesa' : pickup ? 'Retirada' : 'Entrega'}\n`
+
+    if (tableOrder) {
+        text += `Mesa: ${order.table_name_snapshot || 'Mesa'}\n`
+    }
 
     if (order.customer_name) {
         text += `Cliente: ${order.customer_name}\n`
     }
 
-    if (order.customer_phone) {
+    if (!tableOrder && order.customer_phone) {
         text += `Telefone: ${order.customer_phone}\n`
     }
 
-    if (!pickup && order.customer_address) {
+    if (!tableOrder && !pickup && order.customer_address) {
         text += 'Endereco:\n'
         text += `${order.customer_address}\n`
     }
 
-    if (order.payment_method) {
+    if (!tableOrder && order.payment_method) {
         text += `Pagamento: ${paymentLabel(order.payment_method)}\n`
     }
 
@@ -802,7 +812,7 @@ async function buildReceipt(supabase, orderId) {
     text += `${separator}\n`
 
     const subtotal = numericCents(order.subtotal_cents)
-    const delivery = pickup ? 0 : numericCents(order.delivery_cents)
+    const delivery = pickup || tableOrder ? 0 : numericCents(order.delivery_cents)
     const storedDiscount = numericCents(order.coupon_discount_cents)
     const discount = storedDiscount > 0
         ? storedDiscount
