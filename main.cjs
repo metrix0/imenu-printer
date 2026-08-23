@@ -45,6 +45,7 @@ const ESC = {
     cut: '\x1D\x56\x41\x10',
 }
 
+
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms))
 }
