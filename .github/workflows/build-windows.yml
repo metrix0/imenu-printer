@@ -110,8 +110,14 @@ jobs:
 
           gh release view $tag --json tagName *> $null
           $releaseExists = $LASTEXITCODE -eq 0
+          $assetExists = $false
 
           if ($releaseExists) {
+            $assetNames = @(gh release view $tag --json assets --jq ".assets[].name" 2>$null)
+            $assetExists = $assetNames -contains $fileName
+          }
+
+          if ($assetExists) {
             New-Item -ItemType Directory -Force -Path "dist" | Out-Null
             gh release download $tag --pattern $fileName --dir "dist" --clobber
           }
