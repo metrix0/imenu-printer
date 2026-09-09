@@ -118,9 +118,16 @@ async function listComPorts() {
     }))
 }
 
+function normalizeComPortName(value) {
+    return String(value || '')
+        .trim()
+        .replace(/:$/, '')
+        .toUpperCase()
+}
+
 function listWindowsPrinters() {
     return new Promise(resolve => {
-        const cmd = `powershell -NoProfile -Command "Get-Printer | Select-Object -ExpandProperty Name"`
+        const cmd = `powershell -NoProfile -Command "Get-Printer | Select-Object Name,PortName | ConvertTo-Json -Compress"`
 
         exec(cmd, (err, stdout) => {
             if (err) {
@@ -128,16 +135,26 @@ function listWindowsPrinters() {
                 return
             }
 
-            const printers = stdout
-                .split(/\r?\n/)
-                .map(value => value.trim())
-                .filter(Boolean)
-                .map(name => ({
-                    name,
-                    type: 'windows-printer',
-                }))
+            try {
+                const raw = String(stdout || '').trim()
+                if (!raw) {
+                    resolve([])
+                    return
+                }
 
-            resolve(printers)
+                const parsed = JSON.parse(raw)
+                const rows = Array.isArray(parsed) ? parsed : [parsed]
+
+                resolve(rows
+                    .map(printer => ({
+                        name: String(printer.Name || '').trim(),
+                        portName: String(printer.PortName || '').trim(),
+                        type: 'windows-printer',
+                    }))
+                    .filter(printer => printer.name))
+            } catch {
+                resolve([])
+            }
         })
     })
 }
@@ -169,8 +186,22 @@ function putSavedSelectionFirst(items, savedValue, valueKey, missingItemFactory)
 
 async function detectPrinters() {
     const config = readConfig()
-    const detectedComPorts = await listComPorts()
     const detectedWindowsPrinters = await listWindowsPrinters()
+    const detectedComPorts = (await listComPorts()).map(port => {
+        const portName = normalizeComPortName(port.path)
+        const matchingPrinter = detectedWindowsPrinters.find(
+            printer => normalizeComPortName(printer.portName) === portName
+        )
+
+        if (!matchingPrinter) {
+            return port
+        }
+
+        return {
+            ...port,
+            friendlyName: matchingPrinter.name,
+        }
+    })
 
     const comPorts = putSavedSelectionFirst(
         detectedComPorts,
