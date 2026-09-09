@@ -463,6 +463,24 @@ async function updateJob(supabase, id, patch) {
     if (error) throw error
 }
 
+async function recoverInterruptedJobs(supabase, config) {
+    const { data, error } = await supabase
+        .from('print_jobs')
+        .update({
+            status: 'failed',
+            last_error: 'Impressão interrompida antes de ser concluída.',
+        })
+        .eq('restaurant_id', config.RESTAURANT_ID)
+        .eq('status', 'printing')
+        .select('id')
+
+    if (error) throw error
+
+    if (data?.length) {
+        sendLog(`Fila recuperada: ${data.length} pedido(s) interrompido(s) liberado(s).`)
+    }
+}
+
 async function getRecentPrintHistory(limit = 15) {
     const config = readConfig()
 
@@ -863,7 +881,16 @@ async function startPrinterLoop() {
     sendLog(`Modo: ${config.PRINTER_MODE}`)
     sendLog(`Restaurante: ${config.RESTAURANT_NAME || config.RESTAURANT_ID}`)
 
+    try {
+        await recoverInterruptedJobs(supabase, config)
+    } catch (err) {
+        sendLog(`Erro ao recuperar fila: ${err.message}`)
+    }
+
     while (!stopPrinterLoop) {
+        let job = null
+        let printSent = false
+
         try {
             const latestConfig = readConfig()
 
@@ -872,7 +899,7 @@ async function startPrinterLoop() {
                 continue
             }
 
-            const job = await getNextJob(supabase, latestConfig)
+            job = await getNextJob(supabase, latestConfig)
 
             if (job) {
                 const copies = getPrintCopies(latestConfig)
@@ -886,6 +913,7 @@ async function startPrinterLoop() {
                 const receipt = await buildReceipt(supabase, job.order_id)
 
                 await printConfiguredCopies(receipt, latestConfig)
+                printSent = true
 
                 await updateJob(supabase, job.id, {
                     status: 'printed',
@@ -896,6 +924,17 @@ async function startPrinterLoop() {
                 sendLog(`Impresso: ${job.id}${copies === 2 ? ' (2 vias)' : ''}`)
             }
         } catch (err) {
+            if (job?.id) {
+                try {
+                    await updateJob(supabase, job.id, {
+                        status: printSent ? 'failed' : 'queued',
+                        last_error: String(err.message || err),
+                    })
+                } catch (jobError) {
+                    sendLog(`Erro ao liberar pedido ${job.id}: ${jobError.message}`)
+                }
+            }
+
             sendLog(`Erro: ${err.message}`)
         }
 
