@@ -907,6 +907,7 @@ async function startPrinterLoop() {
 
                 await updateJob(supabase, job.id, {
                     status: 'printing',
+                    attempts: Number(job.attempts || 0) + 1,
                     last_error: null,
                 })
 
