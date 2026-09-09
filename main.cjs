@@ -13,8 +13,8 @@ const baseDir = app.getPath('userData')
 const configPath = path.join(baseDir, 'config.json')
 
 const SUPABASE_URL = 'https://mjogdsnxbwhbqcoijrwt.supabase.co'
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXAiLCJyZWYiOiJtam9nZHNeueJ3aGJxY29panJ3dCIsInJvbGUiOiJhbm9uIiwiaWF0IjoxNzYxNjY2ODM1LCJleHAiOjIwNzc3MjQyODM1fQ.S1XLgP7U9ugTXKh4YTrEvzDaroVMN0LhxWc8B3DnkII"
-const SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXAiLCJyZWYiOiJtam9nZHNeueJ3aGJxY29panJ3dCIsInJvbGUiOiJzZXJ2aWNlX3JvbGUiLCJpYXQiOjE3NjE2NjY4MzUsImV4cCI6MjA3NzcyNDI4MzV9.VlAozKcfxZvFi-DnQTsWkWvYbEkzFVyGt7S6yy6c5I0"
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qb2dkc254YndoYnFjb2lqcnd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE2NjY4MzUsImV4cCI6MjA3NzI0MjgzNX0.S1XLgP7U9ugTXKh4YTrEvzDaroVMN0LhxWc8B3DnkII"
+const SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qb2dkc254YndoYnFjb2lqcnd0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MTY2NjgzNSwiZXhwIjoyMDc3MjQyODM1fQ.VlAozKcfxZvFi-DnQTsWkWvYbEkzFVyGt7S6yy6c5I0"
 
 let win = null
 let printerLoopRunning = false
@@ -463,24 +463,6 @@ async function updateJob(supabase, id, patch) {
     if (error) throw error
 }
 
-async function recoverInterruptedJobs(supabase, config) {
-    const { data, error } = await supabase
-        .from('print_jobs')
-        .update({
-            status: 'failed',
-            last_error: 'Impressão interrompida antes de ser concluída.',
-        })
-        .eq('restaurant_id', config.RESTAURANT_ID)
-        .eq('status', 'printing')
-        .select('id')
-
-    if (error) throw error
-
-    if (data?.length) {
-        sendLog(`Fila recuperada: ${data.length} pedido(s) interrompido(s) liberado(s).`)
-    }
-}
-
 async function getRecentPrintHistory(limit = 15) {
     const config = readConfig()
 
@@ -881,16 +863,7 @@ async function startPrinterLoop() {
     sendLog(`Modo: ${config.PRINTER_MODE}`)
     sendLog(`Restaurante: ${config.RESTAURANT_NAME || config.RESTAURANT_ID}`)
 
-    try {
-        await recoverInterruptedJobs(supabase, config)
-    } catch (err) {
-        sendLog(`Erro ao recuperar fila: ${err.message}`)
-    }
-
     while (!stopPrinterLoop) {
-        let job = null
-        let printSent = false
-
         try {
             const latestConfig = readConfig()
 
@@ -899,7 +872,7 @@ async function startPrinterLoop() {
                 continue
             }
 
-            job = await getNextJob(supabase, latestConfig)
+            const job = await getNextJob(supabase, latestConfig)
 
             if (job) {
                 const copies = getPrintCopies(latestConfig)
@@ -913,7 +886,6 @@ async function startPrinterLoop() {
                 const receipt = await buildReceipt(supabase, job.order_id)
 
                 await printConfiguredCopies(receipt, latestConfig)
-                printSent = true
 
                 await updateJob(supabase, job.id, {
                     status: 'printed',
@@ -924,17 +896,6 @@ async function startPrinterLoop() {
                 sendLog(`Impresso: ${job.id}${copies === 2 ? ' (2 vias)' : ''}`)
             }
         } catch (err) {
-            if (job?.id) {
-                try {
-                    await updateJob(supabase, job.id, {
-                        status: printSent ? 'failed' : 'queued',
-                        last_error: String(err.message || err),
-                    })
-                } catch (jobError) {
-                    sendLog(`Erro ao liberar pedido ${job.id}: ${jobError.message}`)
-                }
-            }
-
             sendLog(`Erro: ${err.message}`)
         }
 
