@@ -1,5 +1,5 @@
 const WebSocket = require('ws')
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, MenuItem } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const net = require('net')
@@ -1036,6 +1036,28 @@ async function loginAndGetRestaurant(email, password) {
     }
 }
 
+function addVersionToHelpMenu() {
+    const menu = Menu.getApplicationMenu()
+    if (!menu) return
+
+    const helpItem = menu.items.find(item =>
+        item.role === 'help' || String(item.label || '').toLowerCase() === 'help'
+    )
+
+    if (!helpItem?.submenu) return
+
+    const versionLabel = `Versão ${app.getVersion()}`
+    const alreadyAdded = helpItem.submenu.items.some(item => item.label === versionLabel)
+
+    if (!alreadyAdded) {
+        helpItem.submenu.append(new MenuItem({
+            label: versionLabel,
+            enabled: false,
+        }))
+        Menu.setApplicationMenu(menu)
+    }
+}
+
 function createWindow() {
     win = new BrowserWindow({
         width: 780,
@@ -1059,7 +1081,10 @@ function createWindow() {
     })
 }
 
-app.whenReady().then(createWindow)
+app.whenReady().then(() => {
+    createWindow()
+    addVersionToHelpMenu()
+})
 
 ipcMain.handle('config:get', () => {
     return readConfig()
