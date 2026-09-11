@@ -1,0 +1,53 @@
+name: Temporary Help version menu update
+
+on:
+  push:
+    branches:
+      - tmp-help-version
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Apply minimal Help menu version update
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('main.cjs')
+          text = path.read_text(encoding='utf-8')
+
+          old_import = "const { app, BrowserWindow, ipcMain } = require('electron')"
+          new_import = "const { app, BrowserWindow, ipcMain, Menu, MenuItem } = require('electron')"
+          if old_import not in text:
+              raise SystemExit('Electron import not found')
+          text = text.replace(old_import, new_import, 1)
+
+          marker = "function createWindow() {"
+          helper = """function addVersionToHelpMenu() {\n    const menu = Menu.getApplicationMenu()\n    if (!menu) return\n\n    const helpItem = menu.items.find(item =>\n        item.role === 'help' || String(item.label || '').toLowerCase() === 'help'\n    )\n\n    if (!helpItem?.submenu) return\n\n    const versionLabel = `Versão ${app.getVersion()}`\n    const alreadyAdded = helpItem.submenu.items.some(item => item.label === versionLabel)\n\n    if (!alreadyAdded) {\n        helpItem.submenu.append(new MenuItem({\n            label: versionLabel,\n            enabled: false,\n        }))\n        Menu.setApplicationMenu(menu)\n    }\n}\n\n"""
+          if marker not in text:
+              raise SystemExit('createWindow marker not found')
+          text = text.replace(marker, helper + marker, 1)
+
+          old_ready = "app.whenReady().then(createWindow)"
+          new_ready = """app.whenReady().then(() => {\n    createWindow()\n    addVersionToHelpMenu()\n})"""
+          if old_ready not in text:
+              raise SystemExit('app.whenReady call not found')
+          text = text.replace(old_ready, new_ready, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Remove temporary workflow and commit update
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add main.cjs
+          git rm .github/workflows/tmp-help-version.yml
+          git commit -m "feat: show app version in Help menu"
+          git push origin HEAD:tmp-help-version
