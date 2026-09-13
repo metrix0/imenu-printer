@@ -310,63 +310,40 @@ jobs:
         run: |
           $sourceSha = "${{ github.sha }}"
           $updatedAt = (Get-Date).ToUniversalTime().ToString("o")
+          $trigger = [ordered]@{
+            version = $env:VERSION
+            sourceSha = $sourceSha
+            updatedAt = $updatedAt
+          } | ConvertTo-Json -Compress
 
-          $dispatchPayload = [ordered]@{
-            event_type = "printer-source-release"
-            client_payload = [ordered]@{
-              version = $env:VERSION
-              source_sha = $sourceSha
-              updated_at = $updatedAt
+          $legacyQueued = $false
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            $existingSha = gh api "repos/metrix0/imenu-printer-windows7-legacy/contents/.printer-source-trigger.json?ref=main" --jq ".sha" 2>$null
+            $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
+
+            $payload = [ordered]@{
+              message = "chore: queue legacy printer sync $env:VERSION"
+              content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($trigger))
+              branch = "main"
             }
-          } | ConvertTo-Json -Depth 5 -Compress
-
-          $dispatchPath = Join-Path $env:RUNNER_TEMP "legacy-printer-dispatch.json"
-          [IO.File]::WriteAllText($dispatchPath, $dispatchPayload, [Text.UTF8Encoding]::new($false))
-          $dispatchOutput = gh api --method POST repos/metrix0/imenu-printer-windows7-legacy/dispatches --input $dispatchPath 2>&1
-          $dispatchCode = $LASTEXITCODE
-          Remove-Item $dispatchPath -Force
-
-          $legacyQueued = $dispatchCode -eq 0
-          if ($legacyQueued) {
-            Write-Host "Legacy repository dispatch queued successfully."
-          }
-          else {
-            Write-Warning (($dispatchOutput | Out-String).Trim())
-
-            $trigger = [ordered]@{
-              version = $env:VERSION
-              sourceSha = $sourceSha
-              updatedAt = $updatedAt
-            } | ConvertTo-Json -Compress
-
-            for ($attempt = 1; $attempt -le 5; $attempt++) {
-              $existingSha = gh api "repos/metrix0/imenu-printer-windows7-legacy/contents/.printer-source-trigger.json?ref=main" --jq ".sha" 2>$null
-              $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
-
-              $payload = [ordered]@{
-                message = "chore: queue legacy printer sync $env:VERSION"
-                content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($trigger))
-                branch = "main"
-              }
-              if ($hasExisting) {
-                $payload.sha = $existingSha
-              }
-
-              $payloadPath = Join-Path $env:RUNNER_TEMP "legacy-printer-trigger.json"
-              [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
-              $triggerOutput = gh api --method PUT repos/metrix0/imenu-printer-windows7-legacy/contents/.printer-source-trigger.json --input $payloadPath 2>&1
-              $triggerCode = $LASTEXITCODE
-              Remove-Item $payloadPath -Force
-
-              if ($triggerCode -eq 0) {
-                $legacyQueued = $true
-                Write-Host "Legacy trigger file updated successfully."
-                break
-              }
-
-              Write-Warning (($triggerOutput | Out-String).Trim())
-              Start-Sleep -Seconds (2 * $attempt)
+            if ($hasExisting) {
+              $payload.sha = $existingSha
             }
+
+            $payloadPath = Join-Path $env:RUNNER_TEMP "legacy-printer-trigger.json"
+            [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+            $triggerOutput = gh api --method PUT repos/metrix0/imenu-printer-windows7-legacy/contents/.printer-source-trigger.json --input $payloadPath 2>&1
+            $triggerCode = $LASTEXITCODE
+            Remove-Item $payloadPath -Force
+
+            if ($triggerCode -eq 0) {
+              $legacyQueued = $true
+              Write-Host "Legacy trigger file updated successfully."
+              break
+            }
+
+            Write-Warning (($triggerOutput | Out-String).Trim())
+            Start-Sleep -Seconds (2 * $attempt)
           }
 
           if (-not $legacyQueued) {
