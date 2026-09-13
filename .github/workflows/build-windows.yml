@@ -27,6 +27,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Verify iMenu sync token
         id: verify_sync_token
@@ -113,25 +115,37 @@ jobs:
         run: |
           $tag = "v$env:VERSION"
           $fileName = "iMenu Impressora Setup $env:VERSION.exe"
+          $asset = $null
 
-          gh release view $tag --json tagName *> $null
-          $releaseExists = $LASTEXITCODE -eq 0
-          $assetExists = $false
-
-          if ($releaseExists) {
-            $assetNames = @(gh release view $tag --json assets --jq ".assets[].name" 2>$null)
-            $assetExists = $assetNames -contains $fileName
+          $releaseJson = gh api "repos/${{ github.repository }}/releases/tags/$tag" 2>$null
+          if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($releaseJson)) {
+            try {
+              $existingRelease = $releaseJson | ConvertFrom-Json
+              $asset = $existingRelease.assets | Where-Object { $_.name -match '\.exe$' -and $_.name -notmatch '\.blockmap$' -and [int64]$_.size -gt 1000000 } | Select-Object -First 1
+            }
+            catch {
+              $asset = $null
+            }
           }
 
-          if ($assetExists) {
+          if ($asset) {
             New-Item -ItemType Directory -Force -Path "dist" | Out-Null
-            gh release download $tag --pattern $fileName --dir "dist" --clobber
+            Invoke-WebRequest -Uri ([string]$asset.browser_download_url) -OutFile (Join-Path "dist" $fileName)
           }
           else {
             npm run dist -- --publish always
           }
 
           gh release edit $tag --draft=false
+
+          $releaseJson = gh api "repos/${{ github.repository }}/releases/tags/$tag"
+          $release = $releaseJson | ConvertFrom-Json
+          $asset = $release.assets | Where-Object { $_.name -match '\.exe$' -and $_.name -notmatch '\.blockmap$' -and [int64]$_.size -gt 1000000 } | Select-Object -First 1
+          if (-not $asset) {
+            throw "Primary printer release does not contain a valid Windows installer."
+          }
+
+          "release_url=$([string]$asset.browser_download_url)" >> $env:GITHUB_OUTPUT
 
       - name: Save build
         uses: actions/upload-artifact@v4
@@ -148,8 +162,7 @@ jobs:
           GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
         run: |
           $fileName = "iMenu Impressora Setup $env:VERSION.exe"
-          $encodedFileName = [uri]::EscapeDataString($fileName)
-          $releaseUrl = "https://github.com/metrix0/imenu-printer/releases/download/v$env:VERSION/$encodedFileName"
+          $releaseUrl = "${{ steps.release.outputs.release_url }}"
           $updatedAt = (Get-Date).ToUniversalTime().ToString("o")
 
           $dispatchPayload = [ordered]@{
@@ -263,7 +276,30 @@ jobs:
 
           if ($LASTEXITCODE -ne 0) {
             git commit -m "chore: bump printer version to $env:VERSION"
-            git push
+
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              git fetch origin main
+              if ($LASTEXITCODE -ne 0) {
+                Start-Sleep -Seconds (2 * $attempt)
+                continue
+              }
+
+              git rebase origin/main
+              if ($LASTEXITCODE -ne 0) {
+                git rebase --abort
+                throw "Could not rebase printer version bump onto the latest main."
+              }
+
+              git push origin HEAD:main
+              if ($LASTEXITCODE -eq 0) {
+                break
+              }
+
+              if ($attempt -eq 5) {
+                throw "Could not push printer version bump after 5 attempts."
+              }
+              Start-Sleep -Seconds (2 * $attempt)
+            }
           }
 
       - name: Trigger, build and verify legacy printer sync
