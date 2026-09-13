@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('api', {
     getPrintHistory: () => ipcRenderer.invoke('orders:history'),
     reprintOrder: orderId => ipcRenderer.invoke('orders:reprint', orderId),
     login: payload => ipcRenderer.invoke('auth:login', payload),
+    loginWithGoogle: () => ipcRenderer.invoke('auth:google'),
     logout: () => ipcRenderer.invoke('auth:logout'),
 
     onLog: callback => {
