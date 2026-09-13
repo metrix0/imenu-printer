@@ -349,20 +349,20 @@ jobs:
 
             try {
               $release = $releaseJson | ConvertFrom-Json
-              $asset = $release.assets | Where-Object { $_.name -eq $legacyFileName } | Select-Object -First 1
+              $asset = $release.assets | Where-Object { $_.name -match '\.exe$' -and [int64]$_.size -gt 1000000 } | Select-Object -First 1
             }
             catch {
               continue
             }
 
-            if ($asset -and [int64]$asset.size -gt 1000000) {
+            if ($asset) {
               $legacyReleaseUrl = [string]$asset.browser_download_url
               break
             }
           }
 
           if ([string]::IsNullOrWhiteSpace($legacyReleaseUrl)) {
-            throw "Legacy printer did not publish $legacyFileName within 15 minutes."
+            throw "Legacy printer did not publish a valid Windows installer for $env:VERSION within 15 minutes."
           }
 
           $legacyTrigger = [ordered]@{
