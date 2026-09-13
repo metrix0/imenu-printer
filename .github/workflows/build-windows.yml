@@ -38,10 +38,16 @@ jobs:
             throw "IMENU_SYNC_TOKEN is missing from metrix0/imenu-printer Actions secrets."
           }
 
-          $canPush = gh api repos/metrix0/imenu --jq ".permissions.push"
-          Write-Host "Effective push permission to metrix0/imenu: $canPush"
-          if ($canPush -ne "true") {
+          $canPushImenu = gh api repos/metrix0/imenu --jq ".permissions.push"
+          Write-Host "Effective push permission to metrix0/imenu: $canPushImenu"
+          if ($canPushImenu -ne "true") {
             throw "IMENU_SYNC_TOKEN is present, but GitHub reports push=false for metrix0/imenu."
+          }
+
+          $canPushLegacy = gh api repos/metrix0/imenu-printer-windows7-legacy --jq ".permissions.push"
+          Write-Host "Effective push permission to metrix0/imenu-printer-windows7-legacy: $canPushLegacy"
+          if ($canPushLegacy -ne "true") {
+            throw "IMENU_SYNC_TOKEN is present, but GitHub reports push=false for metrix0/imenu-printer-windows7-legacy."
           }
 
       - name: Setup Node
@@ -260,6 +266,181 @@ jobs:
             git push
           }
 
+      - name: Trigger, build and verify legacy printer sync
+        id: sync_legacy
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
+        run: |
+          $sourceSha = "${{ github.sha }}"
+          $updatedAt = (Get-Date).ToUniversalTime().ToString("o")
+
+          $dispatchPayload = [ordered]@{
+            event_type = "printer-source-release"
+            client_payload = [ordered]@{
+              version = $env:VERSION
+              source_sha = $sourceSha
+              updated_at = $updatedAt
+            }
+          } | ConvertTo-Json -Depth 5 -Compress
+
+          $dispatchPath = Join-Path $env:RUNNER_TEMP "legacy-printer-dispatch.json"
+          [IO.File]::WriteAllText($dispatchPath, $dispatchPayload, [Text.UTF8Encoding]::new($false))
+          $dispatchOutput = gh api --method POST repos/metrix0/imenu-printer-windows7-legacy/dispatches --input $dispatchPath 2>&1
+          $dispatchCode = $LASTEXITCODE
+          Remove-Item $dispatchPath -Force
+
+          $legacyQueued = $dispatchCode -eq 0
+          if ($legacyQueued) {
+            Write-Host "Legacy repository dispatch queued successfully."
+          }
+          else {
+            Write-Warning (($dispatchOutput | Out-String).Trim())
+
+            $trigger = [ordered]@{
+              version = $env:VERSION
+              sourceSha = $sourceSha
+              updatedAt = $updatedAt
+            } | ConvertTo-Json -Compress
+
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              $existingSha = gh api "repos/metrix0/imenu-printer-windows7-legacy/contents/.printer-source-trigger.json?ref=main" --jq ".sha" 2>$null
+              $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
+
+              $payload = [ordered]@{
+                message = "chore: queue legacy printer sync $env:VERSION"
+                content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($trigger))
+                branch = "main"
+              }
+              if ($hasExisting) {
+                $payload.sha = $existingSha
+              }
+
+              $payloadPath = Join-Path $env:RUNNER_TEMP "legacy-printer-trigger.json"
+              [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+              $triggerOutput = gh api --method PUT repos/metrix0/imenu-printer-windows7-legacy/contents/.printer-source-trigger.json --input $payloadPath 2>&1
+              $triggerCode = $LASTEXITCODE
+              Remove-Item $payloadPath -Force
+
+              if ($triggerCode -eq 0) {
+                $legacyQueued = $true
+                Write-Host "Legacy trigger file updated successfully."
+                break
+              }
+
+              Write-Warning (($triggerOutput | Out-String).Trim())
+              Start-Sleep -Seconds (2 * $attempt)
+            }
+          }
+
+          if (-not $legacyQueued) {
+            throw "Could not trigger the legacy printer repository."
+          }
+
+          $legacyFileName = "iMenu Impressora Legacy Setup $env:VERSION.exe"
+          $legacyReleaseUrl = $null
+          for ($attempt = 1; $attempt -le 180; $attempt++) {
+            Start-Sleep -Seconds 5
+
+            $releaseJson = gh api "repos/metrix0/imenu-printer-windows7-legacy/releases/tags/v$env:VERSION" 2>$null
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($releaseJson)) {
+              continue
+            }
+
+            try {
+              $release = $releaseJson | ConvertFrom-Json
+              $asset = $release.assets | Where-Object { $_.name -eq $legacyFileName } | Select-Object -First 1
+            }
+            catch {
+              continue
+            }
+
+            if ($asset -and [int64]$asset.size -gt 1000000) {
+              $legacyReleaseUrl = [string]$asset.browser_download_url
+              break
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($legacyReleaseUrl)) {
+            throw "Legacy printer did not publish $legacyFileName within 15 minutes."
+          }
+
+          $legacyTrigger = [ordered]@{
+            version = $env:VERSION
+            updatedAt = (Get-Date).ToUniversalTime().ToString("o")
+            releaseUrl = $legacyReleaseUrl
+          } | ConvertTo-Json -Compress
+
+          $imenuQueued = $false
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            $existingSha = gh api "repos/metrix0/imenu/contents/.legacy-printer-release-trigger.json?ref=preview" --jq ".sha" 2>$null
+            $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
+
+            $payload = [ordered]@{
+              message = "chore: queue legacy printer download $env:VERSION"
+              content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($legacyTrigger))
+              branch = "preview"
+            }
+            if ($hasExisting) {
+              $payload.sha = $existingSha
+            }
+
+            $payloadPath = Join-Path $env:RUNNER_TEMP "imenu-legacy-printer-trigger.json"
+            [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+            $triggerOutput = gh api --method PUT repos/metrix0/imenu/contents/.legacy-printer-release-trigger.json --input $payloadPath 2>&1
+            $triggerCode = $LASTEXITCODE
+            Remove-Item $payloadPath -Force
+
+            if ($triggerCode -eq 0) {
+              $imenuQueued = $true
+              Write-Host "iMenu legacy download trigger updated successfully."
+              break
+            }
+
+            Write-Warning (($triggerOutput | Out-String).Trim())
+            Start-Sleep -Seconds (2 * $attempt)
+          }
+
+          if (-not $imenuQueued) {
+            throw "Could not queue the legacy installer download in metrix0/imenu preview."
+          }
+
+          $published = $false
+          $expectedMetadataVersion = "$env:VERSION Legacy"
+          for ($attempt = 1; $attempt -le 120; $attempt++) {
+            Start-Sleep -Seconds 5
+
+            $metadataContent = gh api "repos/metrix0/imenu/contents/public/downloads/imenu-printer-legacy.json?ref=preview" --jq ".content" 2>$null
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($metadataContent)) {
+              continue
+            }
+
+            try {
+              $cleanBase64 = $metadataContent -replace '\s', ''
+              $metadataText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($cleanBase64))
+              $metadata = $metadataText | ConvertFrom-Json
+            }
+            catch {
+              continue
+            }
+
+            if ($metadata.version -ne $expectedMetadataVersion) {
+              continue
+            }
+
+            $exeSize = gh api "repos/metrix0/imenu/contents/public/downloads?ref=preview" --jq ".[] | select(.name == `"$legacyFileName`") | .size" 2>$null
+            if ($LASTEXITCODE -eq 0 -and [int64]$exeSize -gt 1000000) {
+              $published = $true
+              break
+            }
+          }
+
+          if (-not $published) {
+            throw "iMenu preview did not publish $legacyFileName within 10 minutes."
+          }
+
+          "error=" >> $env:GITHUB_OUTPUT
+
       - name: Report sync result
         if: ${{ always() }}
         shell: pwsh
@@ -278,3 +459,4 @@ jobs:
           Set-PhaseStatus "printer-sync-token" "${{ steps.verify_sync_token.outcome }}" "${{ steps.verify_sync_token.outcome }}"
           Set-PhaseStatus "printer-release" "${{ steps.release.outcome }}" "${{ steps.release.outcome }}"
           Set-PhaseStatus "printer-preview-sync" "${{ steps.sync_preview.outcome }}" "${{ steps.sync_preview.outputs.error }}"
+          Set-PhaseStatus "printer-legacy-sync" "${{ steps.sync_legacy.outcome }}" "${{ steps.sync_legacy.outputs.error }}"
