@@ -1,7 +1,8 @@
 const WebSocket = require('ws')
-const { app, BrowserWindow, ipcMain, Menu, MenuItem } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, MenuItem, shell } = require('electron')
 const path = require('path')
 const fs = require('fs')
+const http = require('http')
 const net = require('net')
 const os = require('os')
 const { exec } = require('child_process')
@@ -15,10 +16,16 @@ const configPath = path.join(baseDir, 'config.json')
 const SUPABASE_URL = 'https://mjogdsnxbwhbqcoijrwt.supabase.co'
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qb2dkc254YndoYnFjb2lqcnd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE2NjY4MzUsImV4cCI6MjA3NzI0MjgzNX0.S1XLgP7U9ugTXKh4YTrEvzDaroVMN0LhxWc8B3DnkII"
 const SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qb2dkc254YndoYnFjb2lqcnd0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MTY2NjgzNSwiZXhwIjoyMDc3MjQyODM1fQ.VlAozKcfxZvFi-DnQTsWkWvYbEkzFVyGt7S6yy6c5I0"
+const GOOGLE_AUTH_CALLBACK_HOST = '127.0.0.1'
+const GOOGLE_AUTH_CALLBACK_PORT = 47819
+const GOOGLE_AUTH_CALLBACK_PATH = '/auth/callback'
+const GOOGLE_AUTH_CALLBACK_URL = `http://${GOOGLE_AUTH_CALLBACK_HOST}:${GOOGLE_AUTH_CALLBACK_PORT}${GOOGLE_AUTH_CALLBACK_PATH}`
+const GOOGLE_AUTH_TIMEOUT_MS = 5 * 60 * 1000
 
 let win = null
 let printerLoopRunning = false
 let stopPrinterLoop = false
+let googleLoginInProgress = false
 
 const RECEIPT_WIDTH = 40
 
@@ -94,16 +101,37 @@ function saveConfig(config) {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
-function getSupabase(useServiceRole = false) {
+function getSupabase(useServiceRole = false, authOptions = null) {
     const key = useServiceRole
         ? SUPABASE_SERVICE_ROLE_KEY
         : SUPABASE_ANON_KEY
-
-    return createClient(SUPABASE_URL, key, {
+    const options = {
         realtime: {
             transport: WebSocket,
         },
-    })
+    }
+
+    if (authOptions) {
+        options.auth = authOptions
+    }
+
+    return createClient(SUPABASE_URL, key, options)
+}
+
+function createMemoryAuthStorage() {
+    const values = new Map()
+
+    return {
+        getItem(key) {
+            return values.has(key) ? values.get(key) : null
+        },
+        setItem(key, value) {
+            values.set(key, value)
+        },
+        removeItem(key) {
+            values.delete(key)
+        },
+    }
 }
 
 async function listComPorts() {
@@ -994,6 +1022,40 @@ async function testPrint(config) {
     await printConfiguredCopies(text, config)
 }
 
+async function saveRestaurantForUser(supabase, user, fallbackEmail = '') {
+    if (!user?.id) {
+        throw new Error('Usuário inválido.')
+    }
+
+    const { data: restaurant, error: restaurantError } = await supabase
+        .from('restaurants')
+        .select('id, name')
+        .eq('user_id', user.id)
+        .limit(1)
+        .single()
+
+    if (restaurantError) throw restaurantError
+
+    const currentConfig = readConfig()
+    const newConfig = {
+        ...currentConfig,
+        RESTAURANT_ID: restaurant.id,
+        RESTAURANT_NAME: restaurant.name || '',
+        LOGGED_IN_EMAIL: user.email || fallbackEmail,
+    }
+
+    saveConfig(newConfig)
+
+    return {
+        user: {
+            id: user.id,
+            email: user.email,
+        },
+        restaurant_id: restaurant.id,
+        restaurant_name: restaurant.name || '',
+    }
+}
+
 async function loginAndGetRestaurant(email, password) {
     const supabase = getSupabase(false)
 
@@ -1004,35 +1066,161 @@ async function loginAndGetRestaurant(email, password) {
 
     if (loginError) throw loginError
 
-    const userId = loginData.user.id
+    return await saveRestaurantForUser(supabase, loginData.user, email)
+}
 
-    const { data: restaurant, error: restaurantError } = await supabase
-        .from('restaurants')
-        .select('id, name')
-        .eq('user_id', userId)
-        .limit(1)
-        .single()
+function writeGoogleAuthResponse(response, ok) {
+    if (!response || response.writableEnded) return
 
-    if (restaurantError) throw restaurantError
+    response.writeHead(ok ? 200 : 400, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'no-store',
+    })
+    response.end(`<!doctype html>
+<html lang="pt-BR">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>iMenu Impressora</title>
+</head>
+<body style="font-family:Arial,sans-serif;padding:40px;color:#111827">
+    <h1>${ok ? 'Login concluído' : 'Não foi possível entrar'}</h1>
+    <p>${ok
+        ? 'Você pode fechar esta aba e voltar ao iMenu Impressora.'
+        : 'Volte ao iMenu Impressora e tente novamente.'}</p>
+</body>
+</html>`)
+}
 
-    const currentConfig = readConfig()
-
-    const newConfig = {
-        ...currentConfig,
-        RESTAURANT_ID: restaurant.id,
-        RESTAURANT_NAME: restaurant.name || '',
-        LOGGED_IN_EMAIL: loginData.user.email || email,
+async function loginWithGoogleAndGetRestaurant() {
+    if (googleLoginInProgress) {
+        throw new Error('Um login com Google já está em andamento.')
     }
 
-    saveConfig(newConfig)
+    googleLoginInProgress = true
+    let callbackServer = null
+    let timeout = null
+    let callbackResponse = null
 
-    return {
-        user: {
-            id: userId,
-            email: loginData.user.email,
-        },
-        restaurant_id: restaurant.id,
-        restaurant_name: restaurant.name || '',
+    try {
+        const supabase = getSupabase(false, {
+            flowType: 'pkce',
+            storage: createMemoryAuthStorage(),
+            persistSession: true,
+            autoRefreshToken: false,
+            detectSessionInUrl: false,
+        })
+
+        callbackServer = http.createServer()
+
+        await new Promise((resolve, reject) => {
+            const handleError = error => {
+                callbackServer.off('listening', handleListening)
+                reject(error)
+            }
+            const handleListening = () => {
+                callbackServer.off('error', handleError)
+                resolve()
+            }
+
+            callbackServer.once('error', handleError)
+            callbackServer.once('listening', handleListening)
+            callbackServer.listen(GOOGLE_AUTH_CALLBACK_PORT, GOOGLE_AUTH_CALLBACK_HOST)
+        })
+
+        const callbackPromise = new Promise((resolve, reject) => {
+            timeout = setTimeout(() => {
+                reject(new Error('Tempo limite do login com Google excedido.'))
+            }, GOOGLE_AUTH_TIMEOUT_MS)
+
+            callbackServer.on('request', (request, response) => {
+                let requestUrl
+
+                try {
+                    requestUrl = new URL(request.url, GOOGLE_AUTH_CALLBACK_URL)
+                } catch {
+                    response.writeHead(400)
+                    response.end()
+                    return
+                }
+
+                if (requestUrl.pathname !== GOOGLE_AUTH_CALLBACK_PATH) {
+                    response.writeHead(404)
+                    response.end()
+                    return
+                }
+
+                const callbackError =
+                    requestUrl.searchParams.get('error_description') ||
+                    requestUrl.searchParams.get('error')
+
+                if (callbackError) {
+                    writeGoogleAuthResponse(response, false)
+                    reject(new Error(callbackError))
+                    return
+                }
+
+                const code = requestUrl.searchParams.get('code')
+
+                if (!code) {
+                    writeGoogleAuthResponse(response, false)
+                    reject(new Error('O Google não retornou um código de autenticação.'))
+                    return
+                }
+
+                callbackResponse = response
+                resolve(code)
+            })
+        })
+
+        const { data: oauthData, error: oauthError } = await supabase.auth.signInWithOAuth({
+            provider: 'google',
+            options: {
+                redirectTo: GOOGLE_AUTH_CALLBACK_URL,
+                skipBrowserRedirect: true,
+            },
+        })
+
+        if (oauthError) throw oauthError
+        if (!oauthData?.url) {
+            throw new Error('Não foi possível abrir o login com Google.')
+        }
+
+        await shell.openExternal(oauthData.url)
+
+        const code = await callbackPromise
+        const { data: sessionData, error: sessionError } =
+            await supabase.auth.exchangeCodeForSession(code)
+
+        if (sessionError) throw sessionError
+        if (!sessionData?.user) {
+            throw new Error('Não foi possível recuperar o usuário do Google.')
+        }
+
+        const result = await saveRestaurantForUser(
+            supabase,
+            sessionData.user,
+            sessionData.user.email || ''
+        )
+
+        writeGoogleAuthResponse(callbackResponse, true)
+        return result
+    } catch (error) {
+        writeGoogleAuthResponse(callbackResponse, false)
+
+        if (error?.code === 'EADDRINUSE') {
+            throw new Error('A porta local usada pelo login com Google está ocupada. Feche outro iMenu Impressora e tente novamente.')
+        }
+
+        throw error
+    } finally {
+        if (timeout) clearTimeout(timeout)
+
+        if (callbackServer?.listening) {
+            await new Promise(resolve => callbackServer.close(resolve))
+        }
+
+        googleLoginInProgress = false
     }
 }
 
@@ -1134,6 +1322,17 @@ ipcMain.handle('orders:reprint', async (_, orderId) => {
 
 ipcMain.handle('auth:login', async (_, { email, password }) => {
     const result = await loginAndGetRestaurant(email, password)
+
+    startPrinterLoop().catch(err => {
+        printerLoopRunning = false
+        sendLog(`Fatal: ${err.message}`)
+    })
+
+    return result
+})
+
+ipcMain.handle('auth:google', async () => {
+    const result = await loginWithGoogleAndGetRestaurant()
 
     startPrinterLoop().catch(err => {
         printerLoopRunning = false
