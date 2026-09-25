@@ -30,6 +30,8 @@ let googleLoginInProgress = false
 const RECEIPT_WIDTH = 40
 const MAX_PRINT_ATTEMPTS = 3
 const FINAL_PRINT_RETRY_DELAY_MS = 30 * 1000
+const PRINT_OPERATION_TIMEOUT_MS = 20 * 1000
+const RECEIPT_BUILD_TIMEOUT_MS = 15 * 1000
 
 const ESC = {
     init: '\x1B\x40',
@@ -57,6 +59,26 @@ const ESC = {
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function createOperationError(message, retryable = true) {
+    const error = new Error(message)
+    error.printRetryable = retryable
+    return error
+}
+
+function withTimeout(promise, timeoutMs, message) {
+    let timeout = null
+
+    const timeoutPromise = new Promise((_, reject) => {
+        timeout = setTimeout(() => {
+            reject(createOperationError(message, true))
+        }, timeoutMs)
+    })
+
+    return Promise.race([promise, timeoutPromise]).finally(() => {
+        if (timeout) clearTimeout(timeout)
+    })
 }
 
 function sendLog(message) {
@@ -298,7 +320,14 @@ async function printConfiguredCopies(text, config) {
     const copies = getPrintCopies(config)
 
     for (let copy = 1; copy <= copies; copy += 1) {
-        await printRaw(text, config)
+        try {
+            await printRaw(text, config)
+        } catch (error) {
+            if (copy > 1 && error && typeof error === 'object') {
+                error.printRetryable = false
+            }
+            throw error
+        }
 
         if (copy < copies) {
             await sleep(300)
@@ -409,57 +438,97 @@ if (-not $ok) {
         const psPath = path.join(os.tmpdir(), `imenu_raw_print_${Date.now()}.ps1`)
         fs.writeFileSync(psPath, ps, 'utf8')
 
-        exec(`powershell -NoProfile -ExecutionPolicy Bypass -File "${psPath}"`, err => {
-            try {
-                fs.unlinkSync(filePath)
-            } catch {}
+        exec(
+            `powershell -NoProfile -ExecutionPolicy Bypass -File "${psPath}"`,
+            { timeout: PRINT_OPERATION_TIMEOUT_MS },
+            err => {
+                try {
+                    fs.unlinkSync(filePath)
+                } catch {}
 
-            try {
-                fs.unlinkSync(psPath)
-            } catch {}
+                try {
+                    fs.unlinkSync(psPath)
+                } catch {}
 
-            if (err) reject(err)
-            else resolve()
-        })
+                if (err) {
+                    if (err.killed) {
+                        err.printRetryable = false
+                    }
+                    reject(err)
+                } else {
+                    resolve()
+                }
+            }
+        )
     })
 }
 
 function printEthernet(text, config) {
     return new Promise((resolve, reject) => {
         if (!config.PRINTER_IP) {
-            reject(new Error('Missing PRINTER_IP'))
+            reject(createOperationError('Missing PRINTER_IP'))
             return
         }
 
         if (!config.PRINTER_PORT) {
-            reject(new Error('Missing PRINTER_PORT'))
+            reject(createOperationError('Missing PRINTER_PORT'))
             return
         }
 
         const socket = new net.Socket()
+        let settled = false
+        let writeStarted = false
 
-        socket.setTimeout(Number(config.CONNECT_TIMEOUT_MS || 5000))
-
-        socket.on('error', err => {
+        const finishError = (error, retryable = !writeStarted) => {
+            if (settled) return
+            settled = true
             socket.destroy()
-            reject(err)
+
+            if (error && typeof error === 'object') {
+                error.printRetryable = retryable
+            }
+
+            reject(error)
+        }
+
+        const finishSuccess = () => {
+            if (settled) return
+            settled = true
+            socket.end()
+            resolve()
+        }
+
+        socket.setTimeout(
+            Math.max(Number(config.CONNECT_TIMEOUT_MS || 5000), PRINT_OPERATION_TIMEOUT_MS)
+        )
+
+        socket.on('error', error => {
+            finishError(error)
         })
 
         socket.on('timeout', () => {
-            socket.destroy()
-            reject(new Error('Printer timeout'))
+            finishError(
+                createOperationError(
+                    'Tempo limite ao comunicar com a impressora.',
+                    !writeStarted
+                ),
+                !writeStarted
+            )
         })
 
         socket.connect(Number(config.PRINTER_PORT), config.PRINTER_IP, () => {
-            socket.write(iconv.encode(text, 'cp850'), err => {
-                if (err) {
-                    socket.destroy()
-                    reject(err)
+            if (settled) return
+
+            writeStarted = true
+            socket.write(iconv.encode(text, 'cp850'), error => {
+                if (settled) return
+
+                if (error) {
+                    finishError(error, false)
                     return
                 }
 
-                socket.end()
-                resolve()
+                finishSuccess()
             })
         })
     })
@@ -468,7 +537,7 @@ function printEthernet(text, config) {
 function printBluetooth(text, config) {
     return new Promise((resolve, reject) => {
         if (!config.PRINTER_COM_PORT) {
-            reject(new Error('Missing PRINTER_COM_PORT'))
+            reject(createOperationError('Missing PRINTER_COM_PORT'))
             return
         }
 
@@ -477,25 +546,85 @@ function printBluetooth(text, config) {
             baudRate: Number(config.PRINTER_BAUD_RATE || 9600),
             autoOpen: false,
         })
+        let settled = false
+        let writeStarted = false
 
-        port.open(err => {
-            if (err) {
-                reject(err)
+        const closePort = () => {
+            if (port.isOpen) {
+                port.close(() => {})
+            }
+        }
+
+        const finishError = (error, retryable = !writeStarted) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timeout)
+            closePort()
+
+            if (error && typeof error === 'object') {
+                error.printRetryable = retryable
+            }
+
+            reject(error)
+        }
+
+        const finishSuccess = () => {
+            if (settled) return
+            settled = true
+            clearTimeout(timeout)
+            resolve()
+            closePort()
+        }
+
+        const timeout = setTimeout(() => {
+            finishError(
+                createOperationError(
+                    'Tempo limite ao comunicar com a impressora Bluetooth.',
+                    !writeStarted
+                ),
+                !writeStarted
+            )
+        }, PRINT_OPERATION_TIMEOUT_MS)
+
+        port.on('error', error => {
+            finishError(error)
+        })
+
+        port.open(error => {
+            if (settled) {
+                closePort()
                 return
             }
 
-            port.write(iconv.encode(text, 'cp850'), err => {
-                if (err) {
-                    port.close(() => {})
-                    reject(err)
+            if (error) {
+                finishError(error, true)
+                return
+            }
+
+            writeStarted = true
+            port.write(iconv.encode(text, 'cp850'), error => {
+                if (settled) {
+                    closePort()
                     return
                 }
 
-                port.drain(err => {
-                    port.close(() => {})
+                if (error) {
+                    finishError(error, false)
+                    return
+                }
 
-                    if (err) reject(err)
-                    else resolve()
+                port.drain(error => {
+                    if (settled) {
+                        closePort()
+                        return
+                    }
+
+                    if (error) {
+                        finishError(error, false)
+                        return
+                    }
+
+                    finishSuccess()
                 })
             })
         })
@@ -513,6 +642,35 @@ async function getNextJob(supabase, config) {
 
     if (error) throw error
     return data?.[0] || null
+}
+
+async function claimJob(supabase, id, attempt) {
+    const { data, error } = await supabase
+        .from('print_jobs')
+        .update({
+            status: 'printing',
+            attempts: attempt,
+            last_error: null,
+        })
+        .eq('id', id)
+        .eq('status', 'queued')
+        .select('id')
+
+    if (error) throw error
+    return Boolean(data?.length)
+}
+
+async function updateQueuedJobFailure(supabase, id, attempt, patch) {
+    const { error } = await supabase
+        .from('print_jobs')
+        .update({
+            attempts: attempt,
+            ...patch,
+        })
+        .eq('id', id)
+        .eq('status', 'queued')
+
+    if (error) throw error
 }
 
 async function updateJob(supabase, id, patch) {
@@ -950,6 +1108,8 @@ async function startPrinterLoop() {
 
     while (!stopPrinterLoop) {
         let job = null
+        let attempt = null
+        let jobClaimed = false
         let printSent = false
         let retryDelayMs = null
 
@@ -977,51 +1137,73 @@ async function startPrinterLoop() {
                         `Pedido ${job.id} excedeu ${MAX_PRINT_ATTEMPTS} tentativas. Liberando próximo pedido.`
                     )
                 } else {
-                    const attempt = previousAttempts + 1
+                    attempt = previousAttempts + 1
                     const copies = getPrintCopies(latestConfig)
-                    sendLog(
-                        `Imprimindo pedido: ${job.id} (tentativa ${attempt}/${MAX_PRINT_ATTEMPTS})${copies === 2 ? ' (2 vias)' : ''}`
+                    const receipt = await withTimeout(
+                        buildReceipt(supabase, job.order_id),
+                        RECEIPT_BUILD_TIMEOUT_MS,
+                        'Tempo limite ao preparar o pedido para impressão.'
                     )
 
-                    await updateJob(supabase, job.id, {
-                        status: 'printing',
-                        attempts: attempt,
-                        last_error: null,
-                    })
+                    jobClaimed = await claimJob(supabase, job.id, attempt)
 
-                    const receipt = await buildReceipt(supabase, job.order_id)
+                    if (jobClaimed) {
+                        sendLog(
+                            `Imprimindo pedido: ${job.id} (tentativa ${attempt}/${MAX_PRINT_ATTEMPTS})${copies === 2 ? ' (2 vias)' : ''}`
+                        )
 
-                    await printConfiguredCopies(receipt, latestConfig)
-                    printSent = true
+                        await printConfiguredCopies(receipt, latestConfig)
+                        printSent = true
 
-                    await updateJob(supabase, job.id, {
-                        status: 'printed',
-                        printed_at: new Date().toISOString(),
-                        last_error: null,
-                    })
+                        try {
+                            await updateJob(supabase, job.id, {
+                                status: 'printed',
+                                printed_at: new Date().toISOString(),
+                                last_error: null,
+                            })
+                        } catch (statusError) {
+                            sendLog(
+                                `Impresso, mas não foi possível confirmar o status do pedido ${job.id}: ${statusError.message}`
+                            )
+                        }
 
-                    sendLog(`Impresso: ${job.id}${copies === 2 ? ' (2 vias)' : ''}`)
+                        sendLog(`Impresso: ${job.id}${copies === 2 ? ' (2 vias)' : ''}`)
+                    }
                 }
             }
         } catch (err) {
-            if (job?.id) {
-                const attempt = Number(job.attempts || 0) + 1
-                const exhausted = printSent || attempt >= MAX_PRINT_ATTEMPTS
+            if (job?.id && !printSent) {
+                const currentAttempt =
+                    attempt ?? Number(job.attempts || 0) + 1
+                const retryable = err?.printRetryable !== false
+                const exhausted =
+                    !retryable || currentAttempt >= MAX_PRINT_ATTEMPTS
 
                 try {
-                    await updateJob(supabase, job.id, {
+                    const failurePatch = {
                         status: exhausted ? 'failed' : 'queued',
                         last_error: String(err.message || err),
-                    })
+                    }
 
-                    if (!exhausted && attempt === MAX_PRINT_ATTEMPTS - 1) {
+                    if (jobClaimed) {
+                        await updateJob(supabase, job.id, failurePatch)
+                    } else {
+                        await updateQueuedJobFailure(
+                            supabase,
+                            job.id,
+                            currentAttempt,
+                            failurePatch
+                        )
+                    }
+
+                    if (!exhausted && currentAttempt === MAX_PRINT_ATTEMPTS - 1) {
                         retryDelayMs = FINAL_PRINT_RETRY_DELAY_MS
                         sendLog(
-                            `Falha ao imprimir ${job.id} (tentativa ${attempt}/${MAX_PRINT_ATTEMPTS}). Última tentativa em 30 segundos.`
+                            `Falha ao imprimir ${job.id} (tentativa ${currentAttempt}/${MAX_PRINT_ATTEMPTS}). Última tentativa em 30 segundos.`
                         )
                     } else if (exhausted) {
                         sendLog(
-                            `Pedido ${job.id} falhou após ${attempt} tentativa(s). Liberando próximo pedido.`
+                            `Pedido ${job.id} falhou após ${currentAttempt} tentativa(s). Liberando próximo pedido.`
                         )
                     }
                 } catch (jobError) {
