@@ -28,6 +28,8 @@ let stopPrinterLoop = false
 let googleLoginInProgress = false
 
 const RECEIPT_WIDTH = 40
+const MAX_PRINT_ATTEMPTS = 3
+const FINAL_PRINT_RETRY_DELAY_MS = 30 * 1000
 
 const ESC = {
     init: '\x1B\x40',
@@ -949,6 +951,7 @@ async function startPrinterLoop() {
     while (!stopPrinterLoop) {
         let job = null
         let printSent = false
+        let retryDelayMs = null
 
         try {
             const latestConfig = readConfig()
@@ -961,35 +964,66 @@ async function startPrinterLoop() {
             job = await getNextJob(supabase, latestConfig)
 
             if (job) {
-                const copies = getPrintCopies(latestConfig)
-                sendLog(`Imprimindo pedido: ${job.id}${copies === 2 ? ' (2 vias)' : ''}`)
+                const previousAttempts = Number(job.attempts || 0)
 
-                await updateJob(supabase, job.id, {
-                    status: 'printing',
-                    attempts: Number(job.attempts || 0) + 1,
-                    last_error: null,
-                })
+                if (previousAttempts >= MAX_PRINT_ATTEMPTS) {
+                    await updateJob(supabase, job.id, {
+                        status: 'failed',
+                        last_error:
+                            job.last_error ||
+                            `Falha após ${MAX_PRINT_ATTEMPTS} tentativas de impressão.`,
+                    })
+                    sendLog(
+                        `Pedido ${job.id} excedeu ${MAX_PRINT_ATTEMPTS} tentativas. Liberando próximo pedido.`
+                    )
+                } else {
+                    const attempt = previousAttempts + 1
+                    const copies = getPrintCopies(latestConfig)
+                    sendLog(
+                        `Imprimindo pedido: ${job.id} (tentativa ${attempt}/${MAX_PRINT_ATTEMPTS})${copies === 2 ? ' (2 vias)' : ''}`
+                    )
 
-                const receipt = await buildReceipt(supabase, job.order_id)
+                    await updateJob(supabase, job.id, {
+                        status: 'printing',
+                        attempts: attempt,
+                        last_error: null,
+                    })
 
-                await printConfiguredCopies(receipt, latestConfig)
-                printSent = true
+                    const receipt = await buildReceipt(supabase, job.order_id)
 
-                await updateJob(supabase, job.id, {
-                    status: 'printed',
-                    printed_at: new Date().toISOString(),
-                    last_error: null,
-                })
+                    await printConfiguredCopies(receipt, latestConfig)
+                    printSent = true
 
-                sendLog(`Impresso: ${job.id}${copies === 2 ? ' (2 vias)' : ''}`)
+                    await updateJob(supabase, job.id, {
+                        status: 'printed',
+                        printed_at: new Date().toISOString(),
+                        last_error: null,
+                    })
+
+                    sendLog(`Impresso: ${job.id}${copies === 2 ? ' (2 vias)' : ''}`)
+                }
             }
         } catch (err) {
             if (job?.id) {
+                const attempt = Number(job.attempts || 0) + 1
+                const exhausted = printSent || attempt >= MAX_PRINT_ATTEMPTS
+
                 try {
                     await updateJob(supabase, job.id, {
-                        status: printSent ? 'failed' : 'queued',
+                        status: exhausted ? 'failed' : 'queued',
                         last_error: String(err.message || err),
                     })
+
+                    if (!exhausted && attempt === MAX_PRINT_ATTEMPTS - 1) {
+                        retryDelayMs = FINAL_PRINT_RETRY_DELAY_MS
+                        sendLog(
+                            `Falha ao imprimir ${job.id} (tentativa ${attempt}/${MAX_PRINT_ATTEMPTS}). Última tentativa em 30 segundos.`
+                        )
+                    } else if (exhausted) {
+                        sendLog(
+                            `Pedido ${job.id} falhou após ${attempt} tentativa(s). Liberando próximo pedido.`
+                        )
+                    }
                 } catch (jobError) {
                     sendLog(`Erro ao liberar pedido ${job.id}: ${jobError.message}`)
                 }
@@ -999,7 +1033,7 @@ async function startPrinterLoop() {
         }
 
         const latestConfig = readConfig()
-        await sleep(Number(latestConfig.POLL_EVERY_MS || 7000))
+        await sleep(retryDelayMs ?? Number(latestConfig.POLL_EVERY_MS || 7000))
     }
 
     printerLoopRunning = false
