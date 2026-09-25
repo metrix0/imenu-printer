@@ -482,6 +482,21 @@
             white-space: nowrap;
         }
 
+        .printHistoryStatus.queued {
+            background: var(--brand-soft);
+            color: var(--brand-dark);
+        }
+
+        .printHistoryStatus.printing {
+            background: #eff6ff;
+            color: #1d4ed8;
+        }
+
+        .printHistoryStatus.failed {
+            background: var(--red-soft);
+            color: #b91c1c;
+        }
+
         .printHistoryButton {
             padding: 8px 11px;
             background: var(--brand-soft);
@@ -702,8 +717,8 @@
                     <div class="iconTitle">
                         <div class="iconBadge">🧾</div>
                         <div>
-                            <h2 class="cardTitle">Histórico de impressão</h2>
-                            <p class="cardDescription">Pedidos recentes enviados para a impressora.</p>
+                            <h2 class="cardTitle">Pedidos recentes</h2>
+                            <p class="cardDescription">Acompanhe pedidos aguardando, imprimindo e já impressos.</p>
                         </div>
                     </div>
 
@@ -775,6 +790,7 @@
         try {
             await window.api.reprintOrder(orderId)
             log('Pedido enviado novamente para a impressora.')
+            await loadPrintHistory()
         } catch (err) {
             log(`Erro ao reimprimir: ${err?.message || err}`)
         } finally {
@@ -794,7 +810,7 @@
             list.textContent = ''
 
             if (!Array.isArray(rows) || rows.length === 0) {
-                list.innerHTML = '<p class="printHistoryMessage">Nenhum pedido impresso recentemente.</p>'
+                list.innerHTML = '<p class="printHistoryMessage">Nenhum pedido recente.</p>'
                 return
             }
 
@@ -813,21 +829,31 @@
                 customer.className = 'printHistoryCustomer'
                 customer.textContent = [
                     row.customer_name || 'Cliente não informado',
-                    formatPrintDate(row.printed_at),
+                    formatPrintDate(row.status_at),
                 ].filter(Boolean).join(' • ')
 
+                const statusLabels = {
+                    queued: 'Aguardando',
+                    printing: 'Imprimindo',
+                    printed: 'Impresso',
+                    failed: 'Falhou',
+                }
                 const status = document.createElement('span')
-                status.className = 'printHistoryStatus'
-                status.textContent = 'Impresso'
-
-                const button = document.createElement('button')
-                button.type = 'button'
-                button.className = 'printHistoryButton'
-                button.textContent = 'Imprimir novamente'
-                button.addEventListener('click', () => reprintOrder(row.order_id, button))
+                status.className = `printHistoryStatus ${row.status || 'printed'}`
+                status.textContent = statusLabels[row.status] || 'Impresso'
 
                 info.append(order, customer)
-                item.append(info, status, button)
+                item.append(info, status)
+
+                if (row.status === 'printed' || row.status === 'failed') {
+                    const button = document.createElement('button')
+                    button.type = 'button'
+                    button.className = 'printHistoryButton'
+                    button.textContent = 'Imprimir novamente'
+                    button.addEventListener('click', () => reprintOrder(row.order_id, button))
+                    item.appendChild(button)
+                }
+
                 list.appendChild(item)
             }
         } catch (err) {
@@ -1115,7 +1141,7 @@
     }
 
     window.api.onLog(log)
-    window.setInterval(loadPrintHistory, 15000)
+    window.setInterval(loadPrintHistory, 5000)
 
     async function init() {
         const config = await window.api.getConfig()

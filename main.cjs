@@ -712,9 +712,9 @@ async function getRecentPrintHistory(limit = 15) {
         .from('print_jobs')
         .select('id, order_id, status, created_at, printed_at')
         .eq('restaurant_id', config.RESTAURANT_ID)
-        .eq('status', 'printed')
-        .order('printed_at', { ascending: false })
-        .limit(Math.max(limit * 2, limit))
+        .in('status', ['queued', 'printing', 'printed', 'failed'])
+        .order('created_at', { ascending: false })
+        .limit(Math.max(limit * 3, limit))
 
     if (jobsError) throw jobsError
 
@@ -749,7 +749,8 @@ async function getRecentPrintHistory(limit = 15) {
             order_id: job.order_id,
             display_id: order?.display_id ?? null,
             customer_name: order?.customer_name || '',
-            printed_at: job.printed_at || job.created_at || null,
+            status: job.status,
+            status_at: job.printed_at || job.created_at || null,
         }
     })
 }
