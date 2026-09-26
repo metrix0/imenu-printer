@@ -316,7 +316,6 @@
                     <div class="buttonRow">
                         <button class="ghost" id="receiptResetButton" type="button">Restaurar padrão</button>
                     </div>
-                    <p class="localOnly">As alterações são salvas automaticamente somente neste computador. Nada é enviado ao Supabase.</p>
                 </div>
 
                 <div class="receiptPreviewWrap">

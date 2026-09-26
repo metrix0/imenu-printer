@@ -384,17 +384,36 @@ function schedulePendingUpdateInstall() {
     )
     const escapePowerShell = value => String(value).replace(/'/g, "''")
     const installerPath = escapePowerShell(pendingUpdate.installerPath)
+    const appExecutablePath = escapePowerShell(process.execPath)
     const safeScriptPath = escapePowerShell(scriptPath)
     const safeLogPath = escapePowerShell(logPath)
     const currentPid = process.pid
     const script = [
         "$ErrorActionPreference = 'Stop'",
-        `Add-Content -LiteralPath '${safeLogPath}' -Value ('[' + (Get-Date -Format o) + '] Aguardando iMenu fechar. PID: ${currentPid}')`,
-        `for ($i = 0; $i -lt 240; $i++) { if (-not (Get-Process -Id ${currentPid} -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 250 }`,
-        `Add-Content -LiteralPath '${safeLogPath}' -Value ('[' + (Get-Date -Format o) + '] Iniciando instalador.')`,
-        `$installer = Start-Process -FilePath '${installerPath}' -ArgumentList '/S' -PassThru -Wait`,
-        `Add-Content -LiteralPath '${safeLogPath}' -Value ('[' + (Get-Date -Format o) + '] Instalador finalizado. ExitCode: ' + $installer.ExitCode)`,
-        `Remove-Item -LiteralPath '${safeScriptPath}' -Force -ErrorAction SilentlyContinue`,
+        `$logPath = '${safeLogPath}'`,
+        `$appPath = '${appExecutablePath}'`,
+        'function Write-UpdateLog([string]$message) { Add-Content -LiteralPath $logPath -Value (\'[" + "(Get-Date -Format o) + "] \' + $message) }',
+        'try {',
+        `  Write-UpdateLog 'Aguardando iMenu fechar completamente. PID principal: ${currentPid}'`,
+        '  $deadline = (Get-Date).AddMinutes(2)',
+        '  do {',
+        '    $appProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -eq $appPath })',
+        '    if ($appProcesses.Count -eq 0) { break }',
+        '    Start-Sleep -Milliseconds 250',
+        '  } while ((Get-Date) -lt $deadline)',
+        '  if ($appProcesses.Count -gt 0) { throw \'O iMenu Impressora não encerrou completamente antes da atualização.\' }',
+        '  Start-Sleep -Milliseconds 750',
+        "  Write-UpdateLog 'Iniciando instalador.'",
+        `  $installer = Start-Process -FilePath '${installerPath}' -ArgumentList '/S' -PassThru -Wait`,
+        "  if ($installer.ExitCode -ne 0) { throw ('Instalador finalizou com código ' + $installer.ExitCode) }",
+        "  Write-UpdateLog 'Instalação concluída com sucesso.'",
+        '}',
+        'catch {',
+        "  Write-UpdateLog ('Falha na instalação: ' + $_.Exception.Message)",
+        '}',
+        'finally {',
+        `  Remove-Item -LiteralPath '${safeScriptPath}' -Force -ErrorAction SilentlyContinue`,
+        '}',
     ].join('\r\n')
 
     try {
