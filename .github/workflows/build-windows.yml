@@ -1,0 +1,503 @@
+name: Build Windows Installer
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - package.json
+      - package-lock.json
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  statuses: write
+
+concurrency:
+  group: printer-release-main
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2022
+    env:
+      npm_config_msvs_version: 2022
+      IMENU_SYNC_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify iMenu sync token
+        id: verify_sync_token
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:GH_TOKEN)) {
+            throw "IMENU_SYNC_TOKEN is missing from metrix0/imenu-printer Actions secrets."
+          }
+
+          $canPushImenu = gh api repos/metrix0/imenu --jq ".permissions.push"
+          Write-Host "Effective push permission to metrix0/imenu: $canPushImenu"
+          if ($canPushImenu -ne "true") {
+            throw "IMENU_SYNC_TOKEN is present, but GitHub reports push=false for metrix0/imenu."
+          }
+
+          $canPushLegacy = gh api repos/metrix0/imenu-printer-windows7-legacy --jq ".permissions.push"
+          Write-Host "Effective push permission to metrix0/imenu-printer-windows7-legacy: $canPushLegacy"
+          if ($canPushLegacy -ne "true") {
+            throw "IMENU_SYNC_TOKEN is present, but GitHub reports push=false for metrix0/imenu-printer-windows7-legacy."
+          }
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Restore 1.0.8 baseline for retry
+        if: ${{ contains(github.event.head_commit.message, '[retry-1.0.9]') }}
+        shell: pwsh
+        run: npm version 1.0.8 --no-git-tag-version
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Configure node-gyp Python
+        shell: pwsh
+        run: |
+          $python = (Get-Command python).Source
+          "PYTHON=$python" >> $env:GITHUB_ENV
+          "npm_config_python=$python" >> $env:GITHUB_ENV
+          python --version
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Increment version
+        shell: pwsh
+        run: |
+          $current = node -p "require('./package.json').version"
+          $parts = $current.Split('.')
+          $major = [int]$parts[0]
+          $minor = [int]$parts[1]
+          $patch = [int]$parts[2]
+
+          $patch++
+          if ($patch -gt 9) {
+            $patch = 0
+            $minor++
+          }
+          if ($minor -gt 9) {
+            $minor = 0
+            $major++
+          }
+
+          $next = "$major.$minor.$patch"
+          npm version $next --no-git-tag-version
+          "VERSION=$next" >> $env:GITHUB_ENV
+
+      - name: Prepare Windows icon
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $source = [System.Drawing.Image]::FromFile((Resolve-Path 'favicon.png'))
+          try {
+            $canvas = New-Object System.Drawing.Bitmap 512, 512
+            $graphics = [System.Drawing.Graphics]::FromImage($canvas)
+            try {
+              $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+              $graphics.DrawImage($source, 0, 0, 512, 512)
+              $source.Dispose()
+              $source = $null
+              $canvas.Save((Resolve-Path '.').Path + '\\favicon.png', [System.Drawing.Imaging.ImageFormat]::Png)
+            }
+            finally {
+              $graphics.Dispose()
+              $canvas.Dispose()
+            }
+          }
+          finally {
+            if ($source) { $source.Dispose() }
+          }
+
+      - name: Build or reuse installer release
+        id: release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "v$env:VERSION"
+          $fileName = "iMenu Impressora Setup $env:VERSION.exe"
+          $asset = $null
+
+          $releaseJson = gh api "repos/${{ github.repository }}/releases/tags/$tag" 2>$null
+          if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($releaseJson)) {
+            try {
+              $existingRelease = $releaseJson | ConvertFrom-Json
+              $asset = $existingRelease.assets | Where-Object { $_.name -match '\.exe$' -and $_.name -notmatch '\.blockmap$' -and [int64]$_.size -gt 1000000 } | Select-Object -First 1
+            }
+            catch {
+              $asset = $null
+            }
+          }
+
+          if ($asset) {
+            New-Item -ItemType Directory -Force -Path "dist" | Out-Null
+            Invoke-WebRequest -Uri ([string]$asset.browser_download_url) -OutFile (Join-Path "dist" $fileName)
+          }
+          else {
+            npm run dist -- --publish always
+          }
+
+          gh release edit $tag --draft=false
+
+          $releaseJson = gh api "repos/${{ github.repository }}/releases/tags/$tag"
+          $release = $releaseJson | ConvertFrom-Json
+          $asset = $release.assets | Where-Object { $_.name -match '\.exe$' -and $_.name -notmatch '\.blockmap$' -and [int64]$_.size -gt 1000000 } | Select-Object -First 1
+          if (-not $asset) {
+            throw "Primary printer release does not contain a valid Windows installer."
+          }
+
+          "release_url=$([string]$asset.browser_download_url)" >> $env:GITHUB_OUTPUT
+
+      - name: Save build
+        uses: actions/upload-artifact@v4
+        with:
+          name: imenu-printer-${{ env.VERSION }}
+          path: dist/**
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Trigger and verify iMenu preview sync
+        id: sync_preview
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
+        run: |
+          $fileName = "iMenu Impressora Setup $env:VERSION.exe"
+          $releaseUrl = "${{ steps.release.outputs.release_url }}"
+          $updatedAt = (Get-Date).ToUniversalTime().ToString("o")
+
+          $dispatchPayload = [ordered]@{
+            event_type = "printer-release"
+            client_payload = [ordered]@{
+              version = $env:VERSION
+              release_url = $releaseUrl
+              updated_at = $updatedAt
+            }
+          } | ConvertTo-Json -Depth 5 -Compress
+
+          $dispatchPath = Join-Path $env:RUNNER_TEMP "imenu-printer-dispatch.json"
+          [IO.File]::WriteAllText($dispatchPath, $dispatchPayload, [Text.UTF8Encoding]::new($false))
+          $dispatchOutput = gh api --method POST repos/metrix0/imenu/dispatches --input $dispatchPath 2>&1
+          $dispatchCode = $LASTEXITCODE
+          Remove-Item $dispatchPath -Force
+
+          if ($dispatchCode -eq 0) {
+            Write-Host "Repository dispatch queued successfully."
+          }
+          else {
+            Write-Warning (($dispatchOutput | Out-String).Trim())
+          }
+
+          $trigger = [ordered]@{
+            version = $env:VERSION
+            updatedAt = $updatedAt
+            releaseUrl = $releaseUrl
+          } | ConvertTo-Json -Compress
+
+          $triggerQueued = $false
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            $existingSha = gh api "repos/metrix0/imenu/contents/.printer-release-trigger.json?ref=preview" --jq ".sha" 2>$null
+            $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
+
+            $payload = [ordered]@{
+              message = "chore: queue printer download $env:VERSION"
+              content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($trigger))
+              branch = "preview"
+            }
+            if ($hasExisting) {
+              $payload.sha = $existingSha
+            }
+
+            $payloadPath = Join-Path $env:RUNNER_TEMP "imenu-printer-trigger.json"
+            [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+            $triggerOutput = gh api --method PUT repos/metrix0/imenu/contents/.printer-release-trigger.json --input $payloadPath 2>&1
+            $triggerCode = $LASTEXITCODE
+            Remove-Item $payloadPath -Force
+
+            if ($triggerCode -eq 0) {
+              $triggerQueued = $true
+              Write-Host "Preview trigger updated successfully."
+              break
+            }
+
+            Write-Warning (($triggerOutput | Out-String).Trim())
+            Start-Sleep -Seconds (2 * $attempt)
+          }
+
+          if ($dispatchCode -ne 0 -and -not $triggerQueued) {
+            Write-Warning "Both immediate sync triggers failed; waiting for iMenu's scheduled fallback."
+          }
+
+          $synced = $false
+          for ($attempt = 1; $attempt -le 72; $attempt++) {
+            Start-Sleep -Seconds 5
+
+            $metadataContent = gh api "repos/metrix0/imenu/contents/public/downloads/imenu-printer.json?ref=preview" --jq ".content" 2>$null
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($metadataContent)) {
+              continue
+            }
+
+            try {
+              $cleanBase64 = $metadataContent -replace '\s', ''
+              $metadataText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($cleanBase64))
+              $metadata = $metadataText | ConvertFrom-Json
+            }
+            catch {
+              continue
+            }
+
+            if ($metadata.version -ne $env:VERSION) {
+              continue
+            }
+
+            $exeSize = gh api "repos/metrix0/imenu/contents/public/downloads?ref=preview" --jq ".[] | select(.name == `"$fileName`") | .size" 2>$null
+            if ($LASTEXITCODE -eq 0 -and [int64]$exeSize -gt 1000000) {
+              $synced = $true
+              break
+            }
+          }
+
+          if (-not $synced) {
+            "error=immediate sync unavailable; scheduled fallback pending" >> $env:GITHUB_OUTPUT
+            Write-Warning "iMenu preview did not publish $fileName within 6 minutes. The installer release is valid; iMenu's scheduled sync will retry it."
+          }
+          else {
+            "error=" >> $env:GITHUB_OUTPUT
+          }
+
+          $global:LASTEXITCODE = 0
+
+      - name: Restore source favicon
+        shell: pwsh
+        run: git checkout -- favicon.png
+
+      - name: Save version
+        shell: pwsh
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          git diff --cached --quiet
+
+          if ($LASTEXITCODE -ne 0) {
+            git commit -m "chore: bump printer version to $env:VERSION"
+
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              git fetch origin main
+              if ($LASTEXITCODE -ne 0) {
+                Start-Sleep -Seconds (2 * $attempt)
+                continue
+              }
+
+              git rebase origin/main
+              if ($LASTEXITCODE -ne 0) {
+                git rebase --abort
+                throw "Could not rebase printer version bump onto the latest main."
+              }
+
+              git push origin HEAD:main
+              if ($LASTEXITCODE -eq 0) {
+                break
+              }
+
+              if ($attempt -eq 5) {
+                throw "Could not push printer version bump after 5 attempts."
+              }
+              Start-Sleep -Seconds (2 * $attempt)
+            }
+          }
+
+      - name: Trigger, build and verify legacy printer sync
+        id: sync_legacy
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
+        run: |
+          $sourceSha = "${{ github.sha }}"
+          $updatedAt = (Get-Date).ToUniversalTime().ToString("o")
+          $trigger = [ordered]@{
+            version = $env:VERSION
+            sourceSha = $sourceSha
+            updatedAt = $updatedAt
+          } | ConvertTo-Json -Compress
+
+          $legacyQueued = $false
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            $existingSha = gh api "repos/metrix0/imenu-printer-windows7-legacy/contents/.printer-source-trigger.json?ref=main" --jq ".sha" 2>$null
+            $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
+
+            $payload = [ordered]@{
+              message = "chore: queue legacy printer sync $env:VERSION"
+              content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($trigger))
+              branch = "main"
+            }
+            if ($hasExisting) {
+              $payload.sha = $existingSha
+            }
+
+            $payloadPath = Join-Path $env:RUNNER_TEMP "legacy-printer-trigger.json"
+            [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+            $triggerOutput = gh api --method PUT repos/metrix0/imenu-printer-windows7-legacy/contents/.printer-source-trigger.json --input $payloadPath 2>&1
+            $triggerCode = $LASTEXITCODE
+            Remove-Item $payloadPath -Force
+
+            if ($triggerCode -eq 0) {
+              $legacyQueued = $true
+              Write-Host "Legacy trigger file updated successfully."
+              break
+            }
+
+            Write-Warning (($triggerOutput | Out-String).Trim())
+            Start-Sleep -Seconds (2 * $attempt)
+          }
+
+          if (-not $legacyQueued) {
+            throw "Could not trigger the legacy printer repository."
+          }
+
+          $legacyFileName = "iMenu Impressora Legacy Setup $env:VERSION.exe"
+          $legacyReleaseUrl = $null
+          for ($attempt = 1; $attempt -le 180; $attempt++) {
+            Start-Sleep -Seconds 5
+
+            $releaseJson = gh api "repos/metrix0/imenu-printer-windows7-legacy/releases/tags/v$env:VERSION" 2>$null
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($releaseJson)) {
+              continue
+            }
+
+            try {
+              $release = $releaseJson | ConvertFrom-Json
+              $asset = $release.assets | Where-Object { $_.name -match '\.exe$' -and [int64]$_.size -gt 1000000 } | Select-Object -First 1
+            }
+            catch {
+              continue
+            }
+
+            if ($asset) {
+              $legacyReleaseUrl = [string]$asset.browser_download_url
+              break
+            }
+          }
+
+          if ([string]::IsNullOrWhiteSpace($legacyReleaseUrl)) {
+            throw "Legacy printer did not publish a valid Windows installer for $env:VERSION within 15 minutes."
+          }
+
+          $legacyTrigger = [ordered]@{
+            version = $env:VERSION
+            updatedAt = (Get-Date).ToUniversalTime().ToString("o")
+            releaseUrl = $legacyReleaseUrl
+          } | ConvertTo-Json -Compress
+
+          $imenuQueued = $false
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            $existingSha = gh api "repos/metrix0/imenu/contents/.legacy-printer-release-trigger.json?ref=preview" --jq ".sha" 2>$null
+            $hasExisting = $LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($existingSha)
+
+            $payload = [ordered]@{
+              message = "chore: queue legacy printer download $env:VERSION"
+              content = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($legacyTrigger))
+              branch = "preview"
+            }
+            if ($hasExisting) {
+              $payload.sha = $existingSha
+            }
+
+            $payloadPath = Join-Path $env:RUNNER_TEMP "imenu-legacy-printer-trigger.json"
+            [IO.File]::WriteAllText($payloadPath, ($payload | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+            $triggerOutput = gh api --method PUT repos/metrix0/imenu/contents/.legacy-printer-release-trigger.json --input $payloadPath 2>&1
+            $triggerCode = $LASTEXITCODE
+            Remove-Item $payloadPath -Force
+
+            if ($triggerCode -eq 0) {
+              $imenuQueued = $true
+              Write-Host "iMenu legacy download trigger updated successfully."
+              break
+            }
+
+            Write-Warning (($triggerOutput | Out-String).Trim())
+            Start-Sleep -Seconds (2 * $attempt)
+          }
+
+          if (-not $imenuQueued) {
+            throw "Could not queue the legacy installer download in metrix0/imenu preview."
+          }
+
+          $published = $false
+          $expectedMetadataVersion = "$env:VERSION Legacy"
+          for ($attempt = 1; $attempt -le 120; $attempt++) {
+            Start-Sleep -Seconds 5
+
+            $metadataContent = gh api "repos/metrix0/imenu/contents/public/downloads/imenu-printer-legacy.json?ref=preview" --jq ".content" 2>$null
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($metadataContent)) {
+              continue
+            }
+
+            try {
+              $cleanBase64 = $metadataContent -replace '\s', ''
+              $metadataText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($cleanBase64))
+              $metadata = $metadataText | ConvertFrom-Json
+            }
+            catch {
+              continue
+            }
+
+            if ($metadata.version -ne $expectedMetadataVersion) {
+              continue
+            }
+
+            $exeSize = gh api "repos/metrix0/imenu/contents/public/downloads?ref=preview" --jq ".[] | select(.name == `"$legacyFileName`") | .size" 2>$null
+            if ($LASTEXITCODE -eq 0 -and [int64]$exeSize -gt 1000000) {
+              $published = $true
+              break
+            }
+          }
+
+          if (-not $published) {
+            throw "iMenu preview did not publish $legacyFileName within 10 minutes."
+          }
+
+          "error=" >> $env:GITHUB_OUTPUT
+
+      - name: Report sync result
+        if: ${{ always() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          function Set-PhaseStatus($context, $outcome, $description) {
+            $state = if ($outcome -eq "success") { "success" } else { "failure" }
+            if ([string]::IsNullOrWhiteSpace($description)) { $description = $outcome }
+            gh api --method POST "repos/${{ github.repository }}/statuses/${{ github.sha }}" `
+              -f "state=$state" `
+              -f "context=$context" `
+              -f "description=$description"
+          }
+
+          Set-PhaseStatus "printer-sync-token" "${{ steps.verify_sync_token.outcome }}" "${{ steps.verify_sync_token.outcome }}"
+          Set-PhaseStatus "printer-release" "${{ steps.release.outcome }}" "${{ steps.release.outcome }}"
+          Set-PhaseStatus "printer-preview-sync" "${{ steps.sync_preview.outcome }}" "${{ steps.sync_preview.outputs.error }}"
+          Set-PhaseStatus "printer-legacy-sync" "${{ steps.sync_legacy.outcome }}" "${{ steps.sync_legacy.outputs.error }}"
