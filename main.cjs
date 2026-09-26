@@ -403,6 +403,7 @@ function schedulePendingUpdateInstall() {
         '  } while ((Get-Date) -lt $deadline)',
         '  if ($appProcesses.Count -gt 0) { throw \'O iMenu Impressora não encerrou completamente antes da atualização.\' }',
         '  Start-Sleep -Milliseconds 750',
+        "  if (-not (Test-Path -LiteralPath '${installerPath}')) { throw 'Instalador baixado não foi encontrado.' }",
         "  Write-UpdateLog 'Iniciando instalador.'",
         `  $installer = Start-Process -FilePath '${installerPath}' -ArgumentList '/S' -PassThru -Wait`,
         "  if ($installer.ExitCode -ne 0) { throw ('Instalador finalizou com código ' + $installer.ExitCode) }",
