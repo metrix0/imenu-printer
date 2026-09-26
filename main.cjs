@@ -3,9 +3,10 @@ const { app, BrowserWindow, ipcMain, Menu, MenuItem, shell } = require('electron
 const path = require('path')
 const fs = require('fs')
 const http = require('http')
+const https = require('https')
 const net = require('net')
 const os = require('os')
-const { exec } = require('child_process')
+const { exec, spawn } = require('child_process')
 const { createClient } = require('@supabase/supabase-js')
 const { SerialPort } = require('serialport')
 const iconv = require('iconv-lite')
@@ -32,6 +33,20 @@ const MAX_PRINT_ATTEMPTS = 3
 const FINAL_PRINT_RETRY_DELAY_MS = 30 * 1000
 const PRINT_OPERATION_TIMEOUT_MS = 20 * 1000
 const RECEIPT_BUILD_TIMEOUT_MS = 15 * 1000
+const UPDATE_INITIAL_DELAY_MS = 15 * 1000
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+const UPDATE_REPOSITORY = 'metrix0/imenu-printer'
+
+let updateCheckInProgress = false
+let pendingUpdate = null
+let updateInstallScheduled = false
+let updateState = {
+    status: 'idle',
+    currentVersion: app.getVersion(),
+    availableVersion: null,
+    progress: null,
+    message: 'Atualizações automáticas ativadas.',
+}
 
 const ESC = {
     init: '\x1B\x40',
@@ -86,6 +101,329 @@ function sendLog(message) {
     if (win) win.webContents.send('log', String(message))
 }
 
+function isLegacyBuild() {
+    return String(app.getName() || '').toLowerCase().includes('legacy')
+}
+
+function publishUpdateStatus(patch = {}) {
+    updateState = {
+        ...updateState,
+        ...patch,
+        currentVersion: app.getVersion(),
+    }
+
+    if (win && !win.isDestroyed()) {
+        win.webContents.send('update:status', updateState)
+    }
+
+    return updateState
+}
+
+function compareVersions(left, right) {
+    const leftParts = String(left || '').replace(/^v/i, '').split('.').map(Number)
+    const rightParts = String(right || '').replace(/^v/i, '').split('.').map(Number)
+    const length = Math.max(leftParts.length, rightParts.length)
+
+    for (let index = 0; index < length; index += 1) {
+        const leftValue = Number.isFinite(leftParts[index]) ? leftParts[index] : 0
+        const rightValue = Number.isFinite(rightParts[index]) ? rightParts[index] : 0
+
+        if (leftValue > rightValue) return 1
+        if (leftValue < rightValue) return -1
+    }
+
+    return 0
+}
+
+function requestJson(url, redirectCount = 0) {
+    return new Promise((resolve, reject) => {
+        const request = https.get(url, {
+            headers: {
+                'User-Agent': 'iMenu-Impressora',
+                Accept: 'application/vnd.github+json',
+            },
+        }, response => {
+            if (
+                response.statusCode >= 300 &&
+                response.statusCode < 400 &&
+                response.headers.location &&
+                redirectCount < 5
+            ) {
+                response.resume()
+                requestJson(new URL(response.headers.location, url).toString(), redirectCount + 1)
+                    .then(resolve, reject)
+                return
+            }
+
+            if (response.statusCode !== 200) {
+                response.resume()
+                reject(new Error(`Falha ao verificar atualização (HTTP ${response.statusCode}).`))
+                return
+            }
+
+            let body = ''
+            response.setEncoding('utf8')
+            response.on('data', chunk => {
+                body += chunk
+            })
+            response.on('end', () => {
+                try {
+                    resolve(JSON.parse(body))
+                } catch (error) {
+                    reject(error)
+                }
+            })
+        })
+
+        request.setTimeout(15000, () => {
+            request.destroy(new Error('Tempo limite ao verificar atualização.'))
+        })
+        request.on('error', reject)
+    })
+}
+
+function downloadUpdateFile(url, filePath, redirectCount = 0) {
+    return new Promise((resolve, reject) => {
+        const request = https.get(url, {
+            headers: { 'User-Agent': 'iMenu-Impressora' },
+        }, response => {
+            if (
+                response.statusCode >= 300 &&
+                response.statusCode < 400 &&
+                response.headers.location &&
+                redirectCount < 8
+            ) {
+                response.resume()
+                downloadUpdateFile(
+                    new URL(response.headers.location, url).toString(),
+                    filePath,
+                    redirectCount + 1
+                ).then(resolve, reject)
+                return
+            }
+
+            if (response.statusCode !== 200) {
+                response.resume()
+                reject(new Error(`Falha ao baixar atualização (HTTP ${response.statusCode}).`))
+                return
+            }
+
+            fs.mkdirSync(path.dirname(filePath), { recursive: true })
+            const tempPath = `${filePath}.download`
+            const stream = fs.createWriteStream(tempPath)
+            const total = Number(response.headers['content-length'] || 0)
+            let received = 0
+            let lastReported = -1
+
+            response.on('data', chunk => {
+                received += chunk.length
+                if (total > 0) {
+                    const progress = Math.min(100, Math.floor((received / total) * 100))
+                    if (progress !== lastReported && progress % 5 === 0) {
+                        lastReported = progress
+                        publishUpdateStatus({
+                            status: 'downloading',
+                            progress,
+                            message: `Baixando atualização... ${progress}%`,
+                        })
+                    }
+                }
+            })
+
+            response.pipe(stream)
+            stream.on('finish', () => {
+                stream.close(() => {
+                    try {
+                        if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
+                        fs.renameSync(tempPath, filePath)
+                        resolve(filePath)
+                    } catch (error) {
+                        reject(error)
+                    }
+                })
+            })
+            stream.on('error', error => {
+                stream.destroy()
+                try {
+                    if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath)
+                } catch {}
+                reject(error)
+            })
+        })
+
+        request.setTimeout(30000, () => {
+            request.destroy(new Error('Tempo limite ao baixar atualização.'))
+        })
+        request.on('error', reject)
+    })
+}
+
+async function checkForAppUpdate() {
+    if (isLegacyBuild()) {
+        return publishUpdateStatus({
+            status: 'legacy',
+            availableVersion: null,
+            progress: null,
+            message: 'Atualizações do Windows 7/8 são instaladas manualmente.',
+        })
+    }
+
+    if (!app.isPackaged) {
+        return publishUpdateStatus({
+            status: 'development',
+            availableVersion: null,
+            progress: null,
+            message: 'Atualizações automáticas ficam ativas no aplicativo instalado.',
+        })
+    }
+
+    if (updateCheckInProgress) return updateState
+    updateCheckInProgress = true
+
+    publishUpdateStatus({
+        status: 'checking',
+        progress: null,
+        message: 'Verificando atualizações...',
+    })
+
+    try {
+        const release = await requestJson(
+            `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases/latest`
+        )
+        const version = String(release?.tag_name || '').replace(/^v/i, '').trim()
+
+        if (!version || compareVersions(version, app.getVersion()) <= 0) {
+            pendingUpdate = null
+            return publishUpdateStatus({
+                status: 'current',
+                availableVersion: null,
+                progress: null,
+                message: `Versão ${app.getVersion()} atualizada.`,
+            })
+        }
+
+        const installer = (release.assets || []).find(asset =>
+            /\.exe$/i.test(String(asset?.name || '')) &&
+            !/\.blockmap$/i.test(String(asset?.name || '')) &&
+            Number(asset?.size || 0) > 1000000
+        )
+
+        if (!installer?.browser_download_url) {
+            throw new Error('A nova versão não possui um instalador válido.')
+        }
+
+        const updateDir = path.join(baseDir, 'updates', version)
+        const installerPath = path.join(updateDir, `iMenu-Impressora-${version}.exe`)
+        const expectedSize = Number(installer.size || 0)
+
+        publishUpdateStatus({
+            status: 'available',
+            availableVersion: version,
+            progress: 0,
+            message: `Nova versão ${version} encontrada.`,
+        })
+
+        const existingSize = fs.existsSync(installerPath)
+            ? fs.statSync(installerPath).size
+            : 0
+
+        if (!expectedSize || existingSize !== expectedSize) {
+            publishUpdateStatus({
+                status: 'downloading',
+                availableVersion: version,
+                progress: 0,
+                message: 'Baixando atualização...',
+            })
+            await downloadUpdateFile(installer.browser_download_url, installerPath)
+        }
+
+        pendingUpdate = {
+            version,
+            installerPath,
+        }
+
+        return publishUpdateStatus({
+            status: 'ready',
+            availableVersion: version,
+            progress: 100,
+            message: `Versão ${version} pronta. Será instalada ao fechar o aplicativo.`,
+        })
+    } catch (error) {
+        return publishUpdateStatus({
+            status: 'error',
+            progress: null,
+            message: 'Não foi possível verificar atualizações agora.',
+        })
+    } finally {
+        updateCheckInProgress = false
+    }
+}
+
+function schedulePendingUpdateInstall() {
+    if (
+        updateInstallScheduled ||
+        isLegacyBuild() ||
+        !app.isPackaged ||
+        !pendingUpdate?.installerPath ||
+        !fs.existsSync(pendingUpdate.installerPath)
+    ) {
+        return
+    }
+
+    updateInstallScheduled = true
+    const scriptPath = path.join(
+        os.tmpdir(),
+        `imenu_update_${Date.now()}.ps1`
+    )
+    const escapePowerShell = value => String(value).replace(/'/g, "''")
+    const installerPath = escapePowerShell(pendingUpdate.installerPath)
+    const safeScriptPath = escapePowerShell(scriptPath)
+    const script = [
+        'Start-Sleep -Seconds 3',
+        `Start-Process -FilePath '${installerPath}' -ArgumentList '/S' -Wait`,
+        `Remove-Item -LiteralPath '${safeScriptPath}' -Force -ErrorAction SilentlyContinue`,
+    ].join('\r\n')
+
+    try {
+        fs.writeFileSync(scriptPath, script, 'utf8')
+        const child = spawn(
+            'powershell.exe',
+            [
+                '-NoProfile',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-WindowStyle',
+                'Hidden',
+                '-File',
+                scriptPath,
+            ],
+            {
+                detached: true,
+                stdio: 'ignore',
+                windowsHide: true,
+            }
+        )
+        child.unref()
+    } catch (error) {
+        updateInstallScheduled = false
+        sendLog(`Atualização baixada, mas não foi possível agendar a instalação: ${error.message}`)
+    }
+}
+
+function scheduleUpdateChecks() {
+    if (isLegacyBuild() || !app.isPackaged) return
+
+    const initialTimer = setTimeout(() => {
+        checkForAppUpdate().catch(() => {})
+    }, UPDATE_INITIAL_DELAY_MS)
+    initialTimer.unref?.()
+
+    const interval = setInterval(() => {
+        checkForAppUpdate().catch(() => {})
+    }, UPDATE_CHECK_INTERVAL_MS)
+    interval.unref?.()
+}
+
 function readConfig() {
     const defaults = {
         RESTAURANT_ID: '',
@@ -100,6 +438,18 @@ function readConfig() {
         PRINTER_IP: '',
         PRINTER_PORT: 9100,
         PRINT_TWO_COPIES: false,
+
+        RECEIPT_TITLE: 'COZINHA',
+        RECEIPT_FOOTER_TEXT: '',
+        RECEIPT_SHOW_ORDER_TIME: true,
+        RECEIPT_SHOW_CUSTOMER_NAME: true,
+        RECEIPT_SHOW_CUSTOMER_PHONE: true,
+        RECEIPT_SHOW_ADDRESS: true,
+        RECEIPT_SHOW_PAYMENT: true,
+        RECEIPT_SHOW_ITEM_PRICES: true,
+        RECEIPT_SHOW_SUBITEMS: true,
+        RECEIPT_SHOW_OBSERVATIONS: true,
+        RECEIPT_SHOW_TOTALS: true,
 
         POLL_EVERY_MS: 7000,
         CONNECT_TIMEOUT_MS: 5000,
@@ -891,6 +1241,25 @@ function paymentLabel(method) {
 }
 
 async function buildReceipt(supabase, orderId) {
+    const receiptConfig = readConfig()
+    const receiptTitle = String(
+        receiptConfig.RECEIPT_TITLE ||
+        receiptConfig.RECEIPT_NAME_1 ||
+        'COZINHA'
+    ).trim().slice(0, 24) || 'COZINHA'
+    const receiptFooter = String(receiptConfig.RECEIPT_FOOTER_TEXT || '')
+        .trim()
+        .slice(0, 120)
+    const showOrderTime = receiptConfig.RECEIPT_SHOW_ORDER_TIME !== false
+    const showCustomerName = receiptConfig.RECEIPT_SHOW_CUSTOMER_NAME !== false
+    const showCustomerPhone = receiptConfig.RECEIPT_SHOW_CUSTOMER_PHONE !== false
+    const showAddress = receiptConfig.RECEIPT_SHOW_ADDRESS !== false
+    const showPayment = receiptConfig.RECEIPT_SHOW_PAYMENT !== false
+    const showItemPrices = receiptConfig.RECEIPT_SHOW_ITEM_PRICES !== false
+    const showSubitems = receiptConfig.RECEIPT_SHOW_SUBITEMS !== false
+    const showObservations = receiptConfig.RECEIPT_SHOW_OBSERVATIONS !== false
+    const showTotals = receiptConfig.RECEIPT_SHOW_TOTALS !== false
+
     const { data: order, error: orderErr } = await supabase
         .from('orders')
         .select(`
@@ -973,7 +1342,7 @@ async function buildReceipt(supabase, orderId) {
     let text = printerStart()
 
     text += ESC.alignCenter
-    text += ESC.boldOn + ESC.doubleSize + 'COZINHA\n'
+    text += ESC.boldOn + ESC.doubleSize + `${receiptTitle}\n`
     text += ESC.normalSize + ESC.boldOff
     text += ESC.alignLeft
     text += `${separator}\n`
@@ -990,27 +1359,29 @@ async function buildReceipt(supabase, orderId) {
         text += `${separator}\n`
     }
 
-    text += `Hora: ${new Date(order.created_at).toLocaleString('pt-BR')}\n`
+    if (showOrderTime) {
+        text += `Hora: ${new Date(order.created_at).toLocaleString('pt-BR')}\n`
+    }
     text += `Tipo: ${tableOrder ? 'Mesa' : pickup ? 'Retirada' : 'Entrega'}\n`
 
     if (tableOrder) {
         text += `Mesa: ${order.table_name_snapshot || 'Mesa'}\n`
     }
 
-    if (order.customer_name) {
+    if (showCustomerName && order.customer_name) {
         text += `Cliente: ${order.customer_name}\n`
     }
 
-    if (!tableOrder && order.customer_phone) {
+    if (showCustomerPhone && !tableOrder && order.customer_phone) {
         text += `Telefone: ${order.customer_phone}\n`
     }
 
-    if (!tableOrder && !pickup && order.customer_address) {
+    if (showAddress && !tableOrder && !pickup && order.customer_address) {
         text += 'Endereco:\n'
         text += `${order.customer_address}\n`
     }
 
-    if (!tableOrder && order.payment_method) {
+    if (showPayment && !tableOrder && order.payment_method) {
         text += `Pagamento: ${paymentLabel(order.payment_method)}\n`
     }
 
@@ -1024,25 +1395,29 @@ async function buildReceipt(supabase, orderId) {
         )
 
         text += ESC.boldOn
-        text += receiptRow(`${quantity}x ${item.name}`, money(itemTotal))
+        text += showItemPrices
+            ? receiptRow(`${quantity}x ${item.name}`, money(itemTotal))
+            : `${quantity}x ${item.name}\n`
         text += ESC.boldOff
 
         const selectedSubitems = subitemsByOrderItem[item.id] || []
 
-        for (const selected of selectedSubitems) {
-            const selectedQuantity = Math.max(1, Number(selected.quantity) || 1)
-            const selectedPrice = numericCents(selected.price_cents)
-            const selectedLabel = `  - ${selectedQuantity}x ${selected.name}`
+        if (showSubitems) {
+            for (const selected of selectedSubitems) {
+                const selectedQuantity = Math.max(1, Number(selected.quantity) || 1)
+                const selectedPrice = numericCents(selected.price_cents)
+                const selectedLabel = `  - ${selectedQuantity}x ${selected.name}`
 
-            text += selectedPrice > 0
-                ? receiptRow(
-                    selectedLabel,
-                    `+${money(selectedPrice * selectedQuantity)}`
-                )
-                : `${selectedLabel}\n`
+                text += showItemPrices && selectedPrice > 0
+                    ? receiptRow(
+                        selectedLabel,
+                        `+${money(selectedPrice * selectedQuantity)}`
+                    )
+                    : `${selectedLabel}\n`
+            }
         }
 
-        if (item.observation) {
+        if (showObservations && item.observation) {
             text += `  OBS: ${item.observation}\n`
         }
     }
@@ -1060,19 +1435,28 @@ async function buildReceipt(supabase, orderId) {
         subtotal + delivery - discount
     )
 
-    text += receiptRow('Subtotal', money(subtotal))
+    if (showTotals) {
+        text += receiptRow('Subtotal', money(subtotal))
 
-    if (delivery > 0) {
-        text += receiptRow('Entrega', money(delivery))
+        if (delivery > 0) {
+            text += receiptRow('Entrega', money(delivery))
+        }
+
+        if (discount > 0) {
+            text += receiptRow('Desconto', `-${money(discount)}`)
+        }
+
+        text += ESC.boldOn
+        text += receiptRow('TOTAL', money(total))
+        text += ESC.boldOff
     }
 
-    if (discount > 0) {
-        text += receiptRow('Desconto', `-${money(discount)}`)
+    if (receiptFooter) {
+        text += '\n'
+        text += ESC.alignCenter
+        text += `${receiptFooter}\n`
+        text += ESC.alignLeft
     }
-
-    text += ESC.boldOn
-    text += receiptRow('TOTAL', money(total))
-    text += ESC.boldOff
 
     text += '\n\n\n'
     text += ESC.cut
@@ -1465,8 +1849,11 @@ function addVersionToHelpMenu() {
 
 function createWindow() {
     win = new BrowserWindow({
-        width: 780,
-        height: 680,
+        width: 1080,
+        height: 760,
+        minWidth: 820,
+        minHeight: 620,
+        backgroundColor: '#f7f8fa',
         webPreferences: {
             preload: path.join(__dirname, 'preload.cjs'),
         },
@@ -1475,6 +1862,7 @@ function createWindow() {
     win.loadFile('index.html')
 
     win.webContents.once('did-finish-load', () => {
+        publishUpdateStatus()
         const config = readConfig()
 
         if (config.RESTAURANT_ID) {
@@ -1489,10 +1877,23 @@ function createWindow() {
 app.whenReady().then(() => {
     createWindow()
     addVersionToHelpMenu()
+    scheduleUpdateChecks()
+})
+
+app.on('before-quit', () => {
+    schedulePendingUpdateInstall()
 })
 
 ipcMain.handle('config:get', () => {
     return readConfig()
+})
+
+ipcMain.handle('update:get-status', () => {
+    return updateState
+})
+
+ipcMain.handle('update:check', async () => {
+    return await checkForAppUpdate()
 })
 
 ipcMain.handle('config:save', async (_, config) => {

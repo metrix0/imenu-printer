@@ -7,581 +7,718 @@
     <style>
         :root {
             --brand: #f14400;
-            --brand-dark: #c73700;
-            --brand-soft: #fff1eb;
-            --brand-border: #ffd5c4;
-
-            --text: #111827;
-            --muted: #6b7280;
-            --border: #e5e7eb;
-            --bg: #f9fafb;
-            --card: #ffffff;
-
-            --red: #dc2626;
-            --red-soft: #fef2f2;
-            --red-border: #fecaca;
-
-            --green: #16a34a;
-            --green-soft: #f0fdf4;
-            --green-border: #bbf7d0;
+            --action: #d93d00;
+            --action-hover: #c43700;
+            --action-soft: #fff1ea;
+            --text: #1d1d1d;
+            --muted: #626973;
+            --muted-2: #818994;
+            --border: #e2e5e9;
+            --background: #f7f8fa;
+            --surface: #ffffff;
+            --surface-muted: #f1f3f5;
+            --green: #158f4f;
+            --green-soft: #edf8f1;
+            --red: #be2626;
+            --red-soft: #fff0ef;
+            --blue: #2b6fc7;
+            --blue-soft: #eef5ff;
+            --radius: 8px;
         }
 
-        .topbar {
-            justify-content: center;
-            text-align: center;
-        }
+        * { box-sizing: border-box; }
 
-        .brand {
-            align-items: center;
-            text-align: center;
-        }
-
-        .brandTitle {
-            text-align: center;
-        }
-
-        .iconTitle {
-            display: flex;
-            align-items: center;
-            gap: 9px;
-        }
-
-        .iconBadge {
-            width: 34px;
-            height: 34px;
-            border-radius: 10px;
-            display: none;
-            background: var(--brand-soft);
-            color: var(--brand);
-            border: 1px solid var(--brand-border);
-            align-items: center;
-            justify-content: center;
-            font-size: 17px;
-            flex-shrink: 0;
-        }
-
-        button.soft {
-            background: var(--brand-soft);
-            color: var(--brand);
-            border: 1px solid var(--brand-border);
-        }
-
-        button.soft:hover {
-            background: #ffe2d6;
-        }
-
-        button.save {
-            background: var(--brand);
-            color: white;
-        }
-
-        button.save:hover {
-            background: var(--brand-dark);
-        }
-
-        * {
-            box-sizing: border-box;
-        }
-
-        body {
+        html, body {
             margin: 0;
-            min-height: 100vh;
-            font-family: Arial, sans-serif;
-            background: var(--bg);
+            min-height: 100%;
+            color: var(--text);
+            background: var(--background);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            font-size: 14px;
+        }
+
+        button, input, select, textarea { font: inherit; }
+
+        button {
+            min-height: 40px;
+            padding: 9px 14px;
+            border: 1px solid var(--action);
+            border-radius: var(--radius);
+            background: var(--action);
+            color: white;
+            font-size: 13px;
+            font-weight: 500;
+            line-height: 20px;
+            cursor: pointer;
+            transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
+        }
+
+        button:hover:not(:disabled) {
+            border-color: var(--action-hover);
+            background: var(--action-hover);
+        }
+
+        button:focus-visible,
+        input:focus-visible,
+        select:focus-visible,
+        textarea:focus-visible {
+            outline: 2px solid var(--action);
+            outline-offset: 2px;
+        }
+
+        button:disabled { cursor: not-allowed; opacity: .48; }
+
+        button.soft,
+        button.ghost {
+            border-color: var(--border);
+            background: white;
             color: var(--text);
         }
 
-        .page {
-            width: 100%;
-            max-width: 920px;
-            margin: 0 auto;
-            padding: 32px 24px 40px;
+        button.soft:hover:not(:disabled),
+        button.ghost:hover:not(:disabled) {
+            border-color: var(--border);
+            background: var(--surface-muted);
         }
 
-        .topbar {
+        button.danger {
+            border-color: #f4c7c5;
+            background: white;
+            color: var(--red);
+        }
+
+        button.danger:hover:not(:disabled) {
+            border-color: #efb3b0;
+            background: var(--red-soft);
+        }
+
+        .hidden { display: none !important; }
+
+        .loginScreen {
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            padding: 32px 20px;
+            background:
+                radial-gradient(circle at top, rgba(241, 68, 0, .07), transparent 38%),
+                var(--background);
+        }
+
+        .loginWrap { width: min(420px, 100%); }
+
+        .loginLogo {
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            margin-bottom: 28px;
+            gap: 12px;
+            margin: 0 0 20px;
         }
 
-        .brand {
+        .brandMark {
+            display: grid;
+            width: 42px;
+            height: 42px;
+            place-items: center;
+            border-radius: 12px;
+            background: var(--brand);
+            color: white;
+            font-size: 23px;
+            font-weight: 700;
+        }
+
+        .loginLogo h1 {
+            margin: 0;
+            font-size: 22px;
+            font-weight: 600;
+            letter-spacing: -.02em;
+        }
+
+        .loginLogo p {
+            margin: 3px 0 0;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .appShell {
+            min-height: 100vh;
+            display: grid;
+            grid-template-columns: 232px minmax(0, 1fr);
+        }
+
+        .sidebar {
+            position: sticky;
+            top: 0;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            gap: 22px;
+            padding: 22px 16px 16px;
+            border-right: 1px solid var(--border);
+            background: var(--surface);
+        }
+
+        .sidebarBrand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 0 6px;
+        }
+
+        .sidebarBrand .brandMark {
+            width: 34px;
+            height: 34px;
+            border-radius: 9px;
+            font-size: 18px;
+        }
+
+        .sidebarBrandTitle {
+            margin: 0;
+            font-size: 15px;
+            font-weight: 600;
+        }
+
+        .sidebarBrandSubtitle {
+            margin: 2px 0 0;
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        .sidebarNav {
             display: flex;
             flex-direction: column;
             gap: 4px;
         }
 
-        .brandTitle {
-            font-size: 30px;
-            font-weight: 800;
-            letter-spacing: -0.04em;
-            color: var(--brand);
-            margin: 0;
-        }
-
-        .brandSubtitle {
+        .sidebarNav button {
+            min-height: 38px;
+            justify-content: flex-start;
+            width: 100%;
+            padding: 8px 10px;
+            border-color: transparent;
+            background: transparent;
             color: var(--muted);
-            font-size: 14px;
-            margin: 0;
+            text-align: left;
         }
 
-        .layout {
-            display: grid;
-            grid-template-columns: 1fr;
-            gap: 18px;
+        .sidebarNav button:hover {
+            border-color: transparent;
+            background: var(--surface-muted);
+            color: var(--text);
+        }
+
+        .sidebarBottom {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-top: auto;
+        }
+
+        .accountCard,
+        .updateCard {
+            padding: 11px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--surface);
+        }
+
+        .restaurantName {
+            margin: 0;
+            overflow: hidden;
+            font-size: 13px;
+            font-weight: 600;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .restaurantEmail {
+            margin: 3px 0 0;
+            overflow: hidden;
+            color: var(--muted);
+            font-size: 11px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .updateStatus {
+            margin: 0;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.45;
+        }
+
+        .updateCheckButton {
+            min-height: auto;
+            margin-top: 7px;
+            padding: 0;
+            border: 0;
+            background: transparent;
+            color: var(--action);
+            font-size: 11px;
+        }
+
+        .updateCheckButton:hover:not(:disabled) {
+            border: 0;
+            background: transparent;
+            color: var(--action-hover);
+        }
+
+        .appMain {
+            width: min(900px, 100%);
+            margin: 0 auto;
+            padding: 32px 30px 48px;
+        }
+
+        .pageHero {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 24px;
+            margin-bottom: 20px;
+        }
+
+        .eyebrow {
+            margin: 0 0 5px;
+            color: var(--action);
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .pageHero h1 {
+            margin: 0;
+            font-size: 26px;
+            font-weight: 600;
+            letter-spacing: -.03em;
+        }
+
+        .pageHero p {
+            max-width: 580px;
+            margin: 7px 0 0;
+            color: var(--muted);
+            line-height: 1.5;
+        }
+
+        .statusBox {
+            flex: 0 0 auto;
+            padding: 7px 10px;
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            background: white;
+            font-size: 12px;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        .statusBox.active {
+            border-color: #bde4ca;
+            background: var(--green-soft);
+            color: #0f6f3c;
+        }
+
+        .statusBox.inactive {
+            border-color: #efc7c4;
+            background: var(--red-soft);
+            color: var(--red);
+        }
+
+        .contentStack {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
         }
 
         .card {
-            background: var(--card);
+            padding: 20px;
             border: 1px solid var(--border);
-            border-radius: 18px;
-            padding: 22px;
-            box-shadow: 0 8px 26px rgba(15, 23, 42, 0.06);
+            border-radius: 12px;
+            background: var(--surface);
+            box-shadow: 0 1px 2px rgba(15, 23, 42, .03);
+            scroll-margin-top: 18px;
         }
 
         .cardHeader {
             display: flex;
-            justify-content: space-between;
             align-items: flex-start;
+            justify-content: space-between;
             gap: 16px;
-            margin-bottom: 18px;
+            margin-bottom: 16px;
         }
 
         .cardTitle {
-            font-size: 22px;
-            font-weight: 800;
-            letter-spacing: -0.03em;
             margin: 0;
-            color: var(--text);
+            font-size: 17px;
+            font-weight: 600;
+            line-height: 1.3;
         }
 
         .cardDescription {
-            font-size: 14px;
+            margin: 4px 0 0;
             color: var(--muted);
-            margin: 6px 0 0;
+            font-size: 13px;
             line-height: 1.45;
         }
 
-        label {
-            display: block;
-            font-size: 13px;
-            margin-bottom: 6px;
-            font-weight: 700;
-            color: #374151;
+        .buttonRow {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            margin-top: 16px;
         }
 
-        input, select {
+        .buttonRow.topActions {
+            margin: 0 0 16px;
+        }
+
+        .field { margin-top: 14px; }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            color: #42474e;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        input,
+        select,
+        textarea {
             width: 100%;
-            padding: 11px 12px;
-            border-radius: 10px;
-            border: 1px solid #d1d5db;
+            min-height: 44px;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            outline: 0;
             background: white;
             color: var(--text);
             font-size: 14px;
-            outline: none;
         }
 
-        input:focus, select:focus {
-            border-color: var(--brand);
-            box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.12);
-        }
+        input:hover,
+        select:hover,
+        textarea:hover { background: #fafbfc; }
 
-        .field {
-            margin-top: 14px;
+        input:focus,
+        select:focus,
+        textarea:focus {
+            border-color: var(--action);
+            background: white;
         }
 
         .grid2 {
             display: grid;
             grid-template-columns: 1fr 1fr;
-            gap: 14px;
+            gap: 12px;
         }
 
         .checkboxOption {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 11px;
             width: 100%;
-            margin: 18px 0 0;
-            padding: 14px;
+            margin: 14px 0 0;
+            padding: 12px;
             border: 1px solid var(--border);
-            border-radius: 12px;
-            background: #f9fafb;
+            border-radius: var(--radius);
+            background: white;
             cursor: pointer;
         }
 
-        .checkboxOption:hover {
-            border-color: var(--brand-border);
-            background: var(--brand-soft);
-        }
+        .checkboxOption:hover { background: var(--background); }
 
         .checkboxOption input {
-            width: 18px;
-            height: 18px;
+            width: 17px;
+            min-height: 17px;
+            height: 17px;
             margin: 0;
             padding: 0;
-            accent-color: var(--brand);
-            flex-shrink: 0;
-            box-shadow: none;
+            accent-color: var(--action);
+            flex: 0 0 auto;
         }
 
         .checkboxOptionText {
             display: flex;
             flex-direction: column;
-            gap: 3px;
+            gap: 2px;
         }
 
         .checkboxOptionTitle {
-            font-size: 14px;
-            font-weight: 800;
             color: var(--text);
+            font-size: 13px;
+            font-weight: 500;
         }
 
         .checkboxOptionDescription {
-            font-size: 13px;
+            color: var(--muted);
+            font-size: 11px;
             font-weight: 400;
+        }
+
+        .connectionHelp,
+        .localOnly {
+            margin: 7px 0 0;
             color: var(--muted);
-        }
-
-        button {
-            border: 0;
-            border-radius: 10px;
-            padding: 11px 15px;
-            background: var(--brand);
-            color: white;
-            font-weight: 700;
-            cursor: pointer;
-            font-size: 14px;
-            transition: 120ms ease;
-        }
-
-        button:hover {
-            background: var(--brand-dark);
-        }
-
-        button.secondary {
-            background: #111827;
-        }
-
-        button.secondary:hover {
-            background: #374151;
-        }
-
-        button.ghost {
-            background: #f3f4f6;
-            color: #374151;
-        }
-
-        button.ghost:hover {
-            background: #e5e7eb;
-        }
-
-        button.danger {
-            background: #fee2e2;
-            color: #b91c1c;
-        }
-
-        button.danger:hover {
-            background: #fecaca;
-        }
-
-        .buttonRow {
-            display: flex;
-            align-items: center;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin-top: 18px;
-        }
-
-        .hidden {
-            display: none !important;
-        }
-
-        .loginWrap {
-            max-width: 460px;
-            margin: 80px auto 0;
-        }
-
-        .loginLogo {
-            text-align: center;
-            margin-bottom: 22px;
-        }
-
-        .loginLogo h1 {
-            font-size: 36px;
-            color: var(--brand);
-            font-weight: 800;
-            margin: 0;
-            letter-spacing: -0.05em;
-        }
-
-        .loginLogo p {
-            color: var(--muted);
-            margin: 8px 0 0;
-            font-size: 15px;
+            font-size: 11px;
+            line-height: 1.45;
         }
 
         .googleLoginButton {
-            width: 100%;
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 10px;
+            gap: 9px;
+            width: 100%;
+            border-color: var(--border);
             background: white;
-            color: #374151;
-            border: 1px solid #d1d5db;
+            color: var(--text);
         }
 
         .googleLoginButton:hover:not(:disabled) {
-            background: #f9fafb;
+            border-color: var(--border);
+            background: var(--surface-muted);
         }
 
-        .googleLoginButton:disabled {
-            cursor: wait;
-            opacity: 0.65;
-        }
-
-        .googleLoginIcon {
-            width: 18px;
-            height: 18px;
-            flex-shrink: 0;
-        }
+        .googleLoginIcon { width: 18px; height: 18px; }
 
         .loginDivider {
             display: flex;
             align-items: center;
-            gap: 12px;
-            margin: 16px 0 2px;
-            color: #9ca3af;
-            font-size: 12px;
+            gap: 10px;
+            margin: 16px 0 0;
+            color: var(--muted-2);
+            font-size: 11px;
         }
 
         .loginDivider::before,
         .loginDivider::after {
-            content: '';
+            content: "";
             height: 1px;
             flex: 1;
-            background: #e5e7eb;
+            background: var(--border);
         }
 
         .error {
-            color: #b91c1c;
-            background: #fef2f2;
-            border: 1px solid #fecaca;
+            margin: 14px 0 0;
             padding: 10px 12px;
-            border-radius: 10px;
-            font-size: 14px;
-            margin-top: 14px;
-        }
-
-        .error:empty {
-            display: none;
-        }
-
-        .restaurantBox {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 14px;
-            padding: 14px;
-            background: #f9fafb;
-            border: 1px solid var(--border);
-            border-radius: 14px;
-        }
-
-        .restaurantName {
-            font-weight: 800;
-            color: var(--text);
-            margin: 0;
-        }
-
-        .restaurantEmail {
-            color: var(--muted);
-            font-size: 13px;
-            margin: 4px 0 0;
-        }
-
-        .statusBox {
-            width: 100%;
-            padding: 13px 14px;
-            border-radius: 12px;
-            font-size: 13px;
-            font-weight: 800;
-            letter-spacing: 0.02em;
-            margin-bottom: 18px;
-            border: 1px solid;
-        }
-
-        .statusBox.active {
-            color: #166534;
-            background: var(--green-soft);
-            border-color: var(--green-border);
-        }
-
-        .statusBox.inactive {
-            color: #b91c1c;
+            border: 1px solid #efc7c4;
+            border-radius: var(--radius);
             background: var(--red-soft);
-            border-color: var(--red-border);
+            color: var(--red);
+            font-size: 12px;
         }
 
-        .logsBox {
-            background: #111827;
-            color: #86efac;
-            padding: 14px;
-            border-radius: 14px;
-            height: 190px;
-            overflow: auto;
-            font-family: Consolas, monospace;
-            font-size: 13px;
-            line-height: 1.5;
-            white-space: pre-wrap;
-        }
+        .error:empty { display: none; }
 
         .printHistoryList {
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 8px;
         }
 
         .printHistoryRow {
             display: grid;
             grid-template-columns: minmax(0, 1fr) auto auto;
             align-items: center;
-            gap: 12px;
-            padding: 13px 14px;
+            gap: 10px;
+            padding: 12px;
             border: 1px solid var(--border);
-            border-radius: 12px;
-            background: #f9fafb;
+            border-radius: var(--radius);
+            background: white;
         }
 
-        .printHistoryInfo {
-            min-width: 0;
-        }
+        .printHistoryInfo { min-width: 0; }
 
         .printHistoryOrder {
             margin: 0;
-            font-size: 14px;
-            font-weight: 800;
+            font-size: 13px;
+            font-weight: 600;
         }
 
         .printHistoryCustomer {
-            margin: 4px 0 0;
+            margin: 3px 0 0;
             overflow: hidden;
             color: var(--muted);
-            font-size: 13px;
+            font-size: 11px;
             text-overflow: ellipsis;
             white-space: nowrap;
         }
 
         .printHistoryStatus {
-            padding: 6px 9px;
+            padding: 5px 8px;
             border-radius: 999px;
             background: var(--green-soft);
-            color: #166534;
-            font-size: 11px;
-            font-weight: 800;
+            color: #0f6f3c;
+            font-size: 10px;
+            font-weight: 600;
             white-space: nowrap;
         }
 
         .printHistoryStatus.queued {
-            background: var(--brand-soft);
-            color: var(--brand-dark);
+            background: var(--action-soft);
+            color: var(--action-hover);
         }
 
         .printHistoryStatus.printing {
-            background: #eff6ff;
-            color: #1d4ed8;
+            background: var(--blue-soft);
+            color: var(--blue);
         }
 
         .printHistoryStatus.failed {
             background: var(--red-soft);
-            color: #b91c1c;
+            color: var(--red);
         }
 
         .printHistoryButton {
-            padding: 8px 11px;
-            background: var(--brand-soft);
-            color: var(--brand);
-            border: 1px solid var(--brand-border);
-            font-size: 12px;
-            white-space: nowrap;
+            min-height: 34px;
+            padding: 6px 9px;
+            border-color: var(--border);
+            background: white;
+            color: var(--text);
+            font-size: 11px;
         }
 
         .printHistoryButton:hover:not(:disabled) {
-            background: #ffe2d6;
-        }
-
-        .printHistoryButton:disabled {
-            cursor: default;
-            opacity: 0.55;
+            border-color: var(--border);
+            background: var(--surface-muted);
         }
 
         .printHistoryMessage {
             margin: 0;
             padding: 18px 12px;
             border: 1px dashed var(--border);
-            border-radius: 12px;
+            border-radius: var(--radius);
             color: var(--muted);
-            font-size: 13px;
+            font-size: 12px;
             text-align: center;
         }
 
-        @media (max-width: 620px) {
-            .printHistoryRow {
-                grid-template-columns: minmax(0, 1fr) auto;
-            }
-
-            .printHistoryButton {
-                grid-column: 1 / -1;
-                width: 100%;
-            }
+        .logsBox {
+            height: 170px;
+            overflow: auto;
+            padding: 12px;
+            border: 1px solid #252a31;
+            border-radius: var(--radius);
+            background: #191c20;
+            color: #a9e6bc;
+            font-family: Consolas, "SFMono-Regular", monospace;
+            font-size: 11px;
+            line-height: 1.55;
+            white-space: pre-wrap;
         }
 
-        .connectionHelp {
+        .receiptSettingsGrid {
+            display: grid;
+            grid-template-columns: minmax(0, 1.05fr) minmax(280px, .95fr);
+            gap: 18px;
+            align-items: start;
+        }
+
+        .receiptFieldsGrid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .receiptToggles {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-top: 12px;
+        }
+
+        .receiptToggles .checkboxOption {
+            margin: 0;
+            min-height: 58px;
+        }
+
+        .receiptPreviewWrap {
+            position: sticky;
+            top: 20px;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--background);
+        }
+
+        .receiptPreviewLabel {
+            margin: 0 0 9px;
             color: var(--muted);
-            font-size: 13px;
-            margin-top: 8px;
-            line-height: 1.45;
+            font-size: 11px;
+            font-weight: 500;
+        }
+
+        .receiptPreview {
+            min-height: 360px;
+            margin: 0;
+            padding: 18px 14px;
+            overflow: hidden;
+            border: 1px solid #dadde1;
+            border-radius: 4px;
+            background: white;
+            color: #111;
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 11px;
+            line-height: 1.35;
+            white-space: pre-wrap;
+            box-shadow: 0 4px 14px rgba(15, 23, 42, .06);
+        }
+
+        @media (max-width: 900px) {
+            .appShell { grid-template-columns: 190px minmax(0, 1fr); }
+            .sidebar { padding-inline: 12px; }
+            .appMain { padding-inline: 20px; }
+            .receiptSettingsGrid { grid-template-columns: 1fr; }
+            .receiptPreviewWrap { position: static; }
         }
 
         @media (max-width: 720px) {
-            .page {
-                padding: 24px 16px 34px;
+            .appShell { display: block; }
+            .sidebar {
+                position: static;
+                width: 100%;
+                height: auto;
+                border-right: 0;
+                border-bottom: 1px solid var(--border);
             }
-
-            .topbar {
-                align-items: flex-start;
-                flex-direction: column;
-                gap: 12px;
+            .sidebarNav {
+                flex-direction: row;
+                overflow-x: auto;
             }
-
-            .grid2 {
-                grid-template-columns: 1fr;
+            .sidebarNav button {
+                width: auto;
+                white-space: nowrap;
             }
-
-            .card {
-                padding: 18px;
-                border-radius: 16px;
+            .sidebarBottom {
+                display: grid;
+                grid-template-columns: 1fr auto;
+                align-items: end;
             }
+            .updateCard { display: none; }
+            .appMain { padding: 24px 16px 38px; }
+            .pageHero { flex-direction: column; gap: 12px; }
+            .grid2,
+            .receiptFieldsGrid,
+            .receiptToggles { grid-template-columns: 1fr; }
+            .printHistoryRow { grid-template-columns: minmax(0, 1fr) auto; }
+            .printHistoryButton { grid-column: 1 / -1; width: 100%; }
         }
     </style>
 </head>
 
 <body>
-<div class="page">
-    <div id="loginScreen" class="loginWrap">
+<div id="loginScreen" class="loginScreen">
+    <div class="loginWrap">
         <div class="loginLogo">
-            <h1>iMenu</h1>
-            <p>Conecte a impressora do restaurante</p>
+            <div class="brandMark">i</div>
+            <div>
+                <h1>iMenu Impressora</h1>
+                <p>Impressão automática dos pedidos</p>
+            </div>
         </div>
 
         <div class="card">
             <div class="cardHeader">
-                <div class="iconTitle">
-                    <div class="iconBadge">👤</div>
-                    <div>
-                        <h2 class="cardTitle">Entrar</h2>
-                        <p class="cardDescription">Acesse com o login do restaurante.</p>
-                    </div>
+                <div>
+                    <h2 class="cardTitle">Entrar</h2>
+                    <p class="cardDescription">Acesse com o login do restaurante.</p>
                 </div>
             </div>
 
@@ -598,12 +735,12 @@
             <div class="loginDivider">ou</div>
 
             <div class="field">
-                <label>Email</label>
+                <label for="email">Email</label>
                 <input id="email" type="email" autocomplete="email" />
             </div>
 
             <div class="field">
-                <label>Senha</label>
+                <label for="password">Senha</label>
                 <input id="password" type="password" autocomplete="current-password" />
             </div>
 
@@ -614,59 +751,86 @@
             <p class="error" id="loginStatus"></p>
         </div>
     </div>
+</div>
 
-    <div id="appScreen" class="hidden">
-        <div class="topbar">
-            <div class="brand">
-                <h1 class="brandTitle">iMenu Impressora</h1>
-                <p class="brandSubtitle">Impressão automática dos pedidos</p>
+<div id="appScreen" class="hidden appShell">
+    <aside class="sidebar">
+        <div class="sidebarBrand">
+            <div class="brandMark">i</div>
+            <div>
+                <p class="sidebarBrandTitle">iMenu Impressora</p>
+                <p class="sidebarBrandSubtitle">Pedidos automáticos</p>
             </div>
         </div>
 
-        <div class="layout">
-            <div class="card">
-                <div class="cardHeader">
-                    <div class="iconTitle">
-                        <div class="iconBadge">🍽️</div>
-                        <div>
-                            <h2 class="cardTitle">Restaurante</h2>
-                        </div>
-                    </div>
-                </div>
+        <nav class="sidebarNav" aria-label="Navegação">
+            <button type="button" onclick="scrollToSection('overviewSection')">Visão geral</button>
+            <button type="button" onclick="scrollToSection('historySection')">Pedidos</button>
+            <button type="button" onclick="scrollToSection('printerSection')">Impressora</button>
+            <button type="button" onclick="scrollToSection('receiptSection')">Comanda</button>
+            <button type="button" onclick="scrollToSection('logsSection')">Registros</button>
+        </nav>
 
-                <div class="restaurantBox">
-                    <div>
-                        <p class="restaurantName" id="restaurantName">Restaurante</p>
-                        <p class="restaurantEmail" id="restaurantEmail"></p>
-                    </div>
-
-                    <button class="danger" onclick="logout()">Sair</button>
-                </div>
+        <div class="sidebarBottom">
+            <div class="accountCard">
+                <p class="restaurantName" id="restaurantName">Restaurante</p>
+                <p class="restaurantEmail" id="restaurantEmail"></p>
             </div>
 
-            <div class="card">
-                <div id="printerStatus" class="statusBox inactive">
-                    IMPRESSORA INATIVA E NÃO CONFIGURADA
+            <div class="updateCard">
+                <p id="updateStatus" class="updateStatus">Atualizações automáticas ativadas.</p>
+                <button id="updateCheckButton" class="updateCheckButton" type="button" onclick="checkForUpdates()">
+                    Verificar atualizações
+                </button>
+            </div>
+
+            <button class="danger" type="button" onclick="logout()">Sair</button>
+        </div>
+    </aside>
+
+    <main class="appMain">
+        <section id="overviewSection" class="pageHero">
+            <div>
+                <p class="eyebrow">iMenu Impressora</p>
+                <h1>Impressão automática</h1>
+                <p>Os pedidos entram na fila, imprimem automaticamente e continuam visíveis aqui para acompanhamento.</p>
+            </div>
+            <div id="printerStatus" class="statusBox inactive">
+                Impressora não configurada
+            </div>
+        </section>
+
+        <div class="contentStack">
+            <section id="historySection" class="card">
+                <div class="cardHeader">
+                    <div>
+                        <h2 class="cardTitle">Pedidos recentes</h2>
+                        <p class="cardDescription">Acompanhe pedidos aguardando, imprimindo e já impressos.</p>
+                    </div>
+                    <button class="ghost" type="button" onclick="loadPrintHistory()">Atualizar</button>
                 </div>
 
+                <div id="printHistoryList" class="printHistoryList">
+                    <p class="printHistoryMessage">Carregando pedidos...</p>
+                </div>
+            </section>
+
+            <section id="printerSection" class="card">
                 <div class="cardHeader">
-                    <div class="iconTitle">
-                        <div class="iconBadge">🖨️</div>
-                        <div>
-                            <h2 class="cardTitle">Impressora</h2>
-                            <p class="cardDescription">Escolha a impressora dos pedidos.</p>
-                        </div>
+                    <div>
+                        <h2 class="cardTitle">Impressora</h2>
+                        <p class="cardDescription">Configure somente quando trocar de impressora ou conexão.</p>
                     </div>
                 </div>
 
-                <div class="buttonRow" style="margin-top: 0; margin-bottom: 16px;">
-                    <button class="soft" onclick="detectPrinters()"> Detectar impressoras</button>
-                    <button class="soft" onclick="testPrinter()">Teste de impressão</button>
-                    <button class="save" onclick="saveConfig()">Salvar</button>
+                <div class="buttonRow topActions">
+                    <button class="soft" type="button" onclick="detectPrinters()">Detectar impressoras</button>
+                    <button class="soft" type="button" onclick="testPrinter()">Teste de impressão</button>
+                    <button type="button" onclick="saveConfig()">Salvar</button>
                 </div>
 
                 <div class="field">
-                    <label>Tipo de conexão</label>
+                    <label for="PRINTER_MODE">Tipo de conexão</label>
                     <select id="PRINTER_MODE" onchange="updateModeVisibility(); saveConfig(); updatePrinterStatus();">
                         <option value="bluetooth">Bluetooth</option>
                         <option value="usb">USB</option>
@@ -676,7 +840,7 @@
 
                 <div id="bluetoothFields">
                     <div class="field">
-                        <label>Impressora Bluetooth</label>
+                        <label for="PRINTER_COM_PORT">Impressora Bluetooth</label>
                         <select id="PRINTER_COM_PORT" onchange="saveConfig(); updatePrinterStatus();"></select>
                         <p class="connectionHelp">Selecione a porta COM da impressora pareada no Windows.</p>
                     </div>
@@ -684,7 +848,7 @@
 
                 <div id="usbFields">
                     <div class="field">
-                        <label>Impressora USB</label>
+                        <label for="PRINTER_NAME">Impressora USB</label>
                         <select id="PRINTER_NAME" onchange="saveConfig(); updatePrinterStatus();"></select>
                     </div>
                 </div>
@@ -692,12 +856,12 @@
                 <div id="ethernetFields">
                     <div class="grid2">
                         <div class="field">
-                            <label>IP da impressora</label>
+                            <label for="PRINTER_IP">IP da impressora</label>
                             <input id="PRINTER_IP" placeholder="192.168.0.50" onchange="saveConfig(); updatePrinterStatus();" />
                         </div>
 
                         <div class="field">
-                            <label>Porta</label>
+                            <label for="PRINTER_PORT">Porta</label>
                             <input id="PRINTER_PORT" type="number" placeholder="9100" onchange="saveConfig(); updatePrinterStatus();" />
                         </div>
                     </div>
@@ -710,41 +874,31 @@
                         <span class="checkboxOptionDescription">Imprime duas cópias completas de cada pedido.</span>
                     </span>
                 </label>
-            </div>
+            </section>
 
-            <div class="card">
+            <section id="receiptSection" class="card">
                 <div class="cardHeader">
-                    <div class="iconTitle">
-                        <div class="iconBadge">🧾</div>
-                        <div>
-                            <h2 class="cardTitle">Pedidos recentes</h2>
-                            <p class="cardDescription">Acompanhe pedidos aguardando, imprimindo e já impressos.</p>
-                        </div>
-                    </div>
-
-                    <button class="ghost" onclick="loadPrintHistory()">Atualizar</button>
-                </div>
-
-                <div id="printHistoryList" class="printHistoryList">
-                    <p class="printHistoryMessage">Carregando pedidos...</p>
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="cardHeader">
-                    <div class="iconTitle">
-                        <div class="iconBadge">📋</div>
-                        <div>
-                            <h2 class="cardTitle">Registros</h2>
-                            <p class="cardDescription">Últimas ações da impressora.</p>
-                        </div>
+                    <div>
+                        <h2 class="cardTitle">Comanda</h2>
+                        <p class="cardDescription">Personalize o que sai no papel. Essas escolhas ficam salvas somente neste computador.</p>
                     </div>
                 </div>
+                <div id="receiptSettingsMount">
+                    <p class="printHistoryMessage">Carregando personalização...</p>
+                </div>
+            </section>
 
+            <section id="logsSection" class="card">
+                <div class="cardHeader">
+                    <div>
+                        <h2 class="cardTitle">Registros</h2>
+                        <p class="cardDescription">Últimas ações da impressora.</p>
+                    </div>
+                </div>
                 <div id="logs" class="logsBox"></div>
-            </div>
+            </section>
         </div>
-    </div>
+    </main>
 </div>
 
 <script>
@@ -758,6 +912,29 @@
     ]
 
     let currentConfig = {}
+
+    function scrollToSection(id) {
+        document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    }
+
+    function updateUpdateStatus(status) {
+        const label = document.getElementById('updateStatus')
+        const button = document.getElementById('updateCheckButton')
+        if (!label || !status) return
+
+        label.textContent = status.message || 'Atualizações automáticas ativadas.'
+        if (button) {
+            button.disabled = status.status === 'checking' || status.status === 'downloading'
+        }
+    }
+
+    async function checkForUpdates() {
+        try {
+            updateUpdateStatus(await window.api.checkForUpdates())
+        } catch {
+            updateUpdateStatus({ message: 'Não foi possível verificar atualizações agora.' })
+        }
+    }
 
     function log(message) {
         const logs = document.getElementById('logs')
@@ -949,11 +1126,11 @@
         if (!status) return
 
         if (isPrinterConfigured()) {
-            status.textContent = 'IMPRESSORA ATIVA E CONFIGURADA'
+            status.textContent = 'Impressora ativa'
             status.classList.remove('inactive')
             status.classList.add('active')
         } else {
-            status.textContent = 'IMPRESSORA INATIVA E NÃO CONFIGURADA'
+            status.textContent = 'Impressora não configurada'
             status.classList.remove('active')
             status.classList.add('inactive')
         }
@@ -1141,10 +1318,15 @@
     }
 
     window.api.onLog(log)
+    window.api.onUpdateStatus(updateUpdateStatus)
     window.setInterval(loadPrintHistory, 5000)
 
     async function init() {
-        const config = await window.api.getConfig()
+        const [config, updater] = await Promise.all([
+            window.api.getConfig(),
+            window.api.getUpdateStatus(),
+        ])
+        updateUpdateStatus(updater)
 
         setFormConfig(config)
 
@@ -1169,5 +1351,6 @@
 
     init()
 </script>
+<script src="receipt-settings.js"></script>
 </body>
 </html>

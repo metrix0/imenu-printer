@@ -10,6 +10,12 @@ contextBridge.exposeInMainWorld('api', {
     login: payload => ipcRenderer.invoke('auth:login', payload),
     loginWithGoogle: () => ipcRenderer.invoke('auth:google'),
     logout: () => ipcRenderer.invoke('auth:logout'),
+    getUpdateStatus: () => ipcRenderer.invoke('update:get-status'),
+    checkForUpdates: () => ipcRenderer.invoke('update:check'),
+
+    onUpdateStatus: callback => {
+        ipcRenderer.on('update:status', (_, status) => callback(status))
+    },
 
     onLog: callback => {
         ipcRenderer.on('log', (_, message) => callback(message))

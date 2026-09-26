@@ -1,203 +1,201 @@
 (() => {
-    const SETTINGS_ID = 'receiptSettings'
     const SAVE_DELAY_MS = 350
+    const DEFAULTS = {
+        RECEIPT_TITLE: 'COZINHA',
+        RECEIPT_FOOTER_TEXT: '',
+        RECEIPT_SHOW_ORDER_TIME: true,
+        RECEIPT_SHOW_CUSTOMER_NAME: true,
+        RECEIPT_SHOW_CUSTOMER_PHONE: true,
+        RECEIPT_SHOW_ADDRESS: true,
+        RECEIPT_SHOW_PAYMENT: true,
+        RECEIPT_SHOW_ITEM_PRICES: true,
+        RECEIPT_SHOW_SUBITEMS: true,
+        RECEIPT_SHOW_OBSERVATIONS: true,
+        RECEIPT_SHOW_TOTALS: true,
+    }
     let saveTimer = null
 
-    function createElement(tag, attributes = {}, text = '') {
-        const element = document.createElement(tag)
-
-        for (const [key, value] of Object.entries(attributes)) {
-            if (key === 'className') {
-                element.className = value
-            } else if (key === 'htmlFor') {
-                element.htmlFor = value
-            } else {
-                element.setAttribute(key, value)
-            }
-        }
-
-        if (text) {
-            element.textContent = text
-        }
-
-        return element
+    function checked(id) {
+        return document.getElementById(id)?.checked === true
     }
 
-    function createTextField(id, labelText, placeholder) {
-        const wrapper = createElement('div', { className: 'field receiptNameField' })
-        const label = createElement('label', { htmlFor: id, id: `${id}_LABEL` }, labelText)
-        const input = createElement('input', {
-            id,
-            type: 'text',
-            maxlength: '20',
-            placeholder,
-            autocomplete: 'off',
-        })
-
-        wrapper.append(label, input)
-        return wrapper
+    function value(id) {
+        return document.getElementById(id)?.value || ''
     }
 
-    function createCheckbox(id, title, description) {
-        const label = createElement('label', {
-            className: 'checkboxOption receiptCheckbox',
-            htmlFor: id,
-        })
-        const input = createElement('input', {
-            id,
-            type: 'checkbox',
-        })
-        const text = createElement('span', { className: 'checkboxOptionText' })
-        const titleElement = createElement('span', { className: 'checkboxOptionTitle' }, title)
-        const descriptionElement = createElement(
-            'span',
-            { className: 'checkboxOptionDescription' },
-            description
-        )
-
-        text.append(titleElement, descriptionElement)
-        label.append(input, text)
-        return label
-    }
-
-    function injectStyles() {
-        if (document.getElementById('receiptSettingsStyles')) return
-
-        const style = createElement('style', { id: 'receiptSettingsStyles' })
-        style.textContent = `
-            .receiptSettingsBlock {
-                margin-top: 20px;
-                padding-top: 20px;
-                border-top: 1px solid var(--border, #e5e7eb);
-            }
-
-            .receiptSettingsTitle {
-                margin: 0;
-                font-size: 17px;
-                font-weight: 800;
-                color: var(--text, #111827);
-            }
-
-            .receiptSettingsDescription {
-                margin: 5px 0 0;
-                font-size: 13px;
-                line-height: 1.45;
-                color: var(--muted, #6b7280);
-            }
-
-            .receiptNamesGrid {
-                display: grid;
-                grid-template-columns: 1fr 1fr;
-                gap: 14px;
-            }
-
-            .receiptCheckbox {
-                margin-top: 12px;
-            }
-
-            @media (max-width: 720px) {
-                .receiptNamesGrid {
-                    grid-template-columns: 1fr;
-                }
-            }
-        `
-        document.head.appendChild(style)
-    }
-
-    function getSettingsConfig() {
+    function getSettings() {
         return {
-            RECEIPT_NAME_1: document.getElementById('RECEIPT_NAME_1')?.value || '',
-            RECEIPT_NAME_2: document.getElementById('RECEIPT_NAME_2')?.value || '',
-            PRINT_READY_TIME: document.getElementById('PRINT_READY_TIME')?.checked === true,
-            PRINT_DELIVERY_TIME: document.getElementById('PRINT_DELIVERY_TIME')?.checked === true,
+            RECEIPT_TITLE: value('RECEIPT_TITLE').trim().slice(0, 24) || 'COZINHA',
+            RECEIPT_FOOTER_TEXT: value('RECEIPT_FOOTER_TEXT').trim().slice(0, 120),
+            RECEIPT_SHOW_ORDER_TIME: checked('RECEIPT_SHOW_ORDER_TIME'),
+            RECEIPT_SHOW_CUSTOMER_NAME: checked('RECEIPT_SHOW_CUSTOMER_NAME'),
+            RECEIPT_SHOW_CUSTOMER_PHONE: checked('RECEIPT_SHOW_CUSTOMER_PHONE'),
+            RECEIPT_SHOW_ADDRESS: checked('RECEIPT_SHOW_ADDRESS'),
+            RECEIPT_SHOW_PAYMENT: checked('RECEIPT_SHOW_PAYMENT'),
+            RECEIPT_SHOW_ITEM_PRICES: checked('RECEIPT_SHOW_ITEM_PRICES'),
+            RECEIPT_SHOW_SUBITEMS: checked('RECEIPT_SHOW_SUBITEMS'),
+            RECEIPT_SHOW_OBSERVATIONS: checked('RECEIPT_SHOW_OBSERVATIONS'),
+            RECEIPT_SHOW_TOTALS: checked('RECEIPT_SHOW_TOTALS'),
         }
+    }
+
+    function receiptRow(left, right, width = 40) {
+        const room = Math.max(1, width - left.length - right.length)
+        if (left.length + right.length + 1 > width) {
+            return `${left}\n${right.padStart(width)}`
+        }
+        return `${left}${' '.repeat(room)}${right}`
+    }
+
+    function renderPreview() {
+        const preview = document.getElementById('receiptPreview')
+        if (!preview) return
+
+        const settings = getSettings()
+        const lines = []
+        lines.push(settings.RECEIPT_TITLE.toUpperCase())
+        lines.push('----------------------------------------')
+        lines.push('PEDIDO #42')
+        if (settings.RECEIPT_SHOW_ORDER_TIME) lines.push('Hora: 26/09/2026 12:30:00')
+        lines.push('Tipo: Entrega')
+        if (settings.RECEIPT_SHOW_CUSTOMER_NAME) lines.push('Cliente: Maria')
+        if (settings.RECEIPT_SHOW_CUSTOMER_PHONE) lines.push('Telefone: (11) 99999-9999')
+        if (settings.RECEIPT_SHOW_ADDRESS) {
+            lines.push('Endereco:')
+            lines.push('Rua Exemplo, 123 - Centro')
+        }
+        if (settings.RECEIPT_SHOW_PAYMENT) lines.push('Pagamento: Pix (pago online)')
+        lines.push('----------------------------------------')
+        lines.push(
+            settings.RECEIPT_SHOW_ITEM_PRICES
+                ? receiptRow('2x X-Burger', 'R$ 38,00')
+                : '2x X-Burger'
+        )
+        if (settings.RECEIPT_SHOW_SUBITEMS) {
+            lines.push(
+                settings.RECEIPT_SHOW_ITEM_PRICES
+                    ? receiptRow('  - 1x Bacon', '+R$ 3,00')
+                    : '  - 1x Bacon'
+            )
+        }
+        if (settings.RECEIPT_SHOW_OBSERVATIONS) lines.push('  OBS: Sem cebola')
+        lines.push('----------------------------------------')
+        if (settings.RECEIPT_SHOW_TOTALS) {
+            lines.push(receiptRow('Subtotal', 'R$ 41,00'))
+            lines.push(receiptRow('Entrega', 'R$ 5,00'))
+            lines.push(receiptRow('TOTAL', 'R$ 46,00'))
+        }
+        if (settings.RECEIPT_FOOTER_TEXT) {
+            lines.push('')
+            lines.push(settings.RECEIPT_FOOTER_TEXT)
+        }
+
+        preview.textContent = lines.join('\n')
     }
 
     async function saveSettings() {
         clearTimeout(saveTimer)
         saveTimer = null
-        await window.api.saveConfig(getSettingsConfig())
+        await window.api.saveConfig(getSettings())
     }
 
     function scheduleSave() {
+        renderPreview()
         clearTimeout(saveTimer)
         saveTimer = setTimeout(() => {
             saveSettings().catch(() => {})
         }, SAVE_DELAY_MS)
     }
 
-    function updateCopyFields() {
-        const twoCopies = document.getElementById('PRINT_TWO_COPIES')?.checked === true
-        const secondField = document.getElementById('RECEIPT_NAME_2')?.closest('.receiptNameField')
-        const firstLabel = document.getElementById('RECEIPT_NAME_1_LABEL')
+    function toggle(id, title) {
+        return `
+            <label class="checkboxOption" for="${id}">
+                <input id="${id}" type="checkbox" />
+                <span class="checkboxOptionText">
+                    <span class="checkboxOptionTitle">${title}</span>
+                </span>
+            </label>
+        `
+    }
 
-        if (secondField) {
-            secondField.style.display = twoCopies ? 'block' : 'none'
-        }
+    function setFields(config) {
+        const title = document.getElementById('RECEIPT_TITLE')
+        const footer = document.getElementById('RECEIPT_FOOTER_TEXT')
+        title.value = config.RECEIPT_TITLE || config.RECEIPT_NAME_1 || DEFAULTS.RECEIPT_TITLE
+        footer.value = config.RECEIPT_FOOTER_TEXT || ''
 
-        if (firstLabel) {
-            firstLabel.textContent = twoCopies ? 'Nome da 1ª via' : 'Nome da comanda'
+        for (const [key, defaultValue] of Object.entries(DEFAULTS)) {
+            if (typeof defaultValue !== 'boolean') continue
+            const element = document.getElementById(key)
+            if (element) element.checked = config[key] !== false
         }
     }
 
+    async function resetSettings() {
+        setFields(DEFAULTS)
+        renderPreview()
+        await window.api.saveConfig(DEFAULTS)
+    }
+
     async function mount() {
-        if (document.getElementById(SETTINGS_ID)) return
+        const mount = document.getElementById('receiptSettingsMount')
+        if (!mount || mount.dataset.mounted === 'true') return
+        mount.dataset.mounted = 'true'
 
-        const twoCopiesOption = document.getElementById('PRINT_TWO_COPIES')
-        const printerCard = twoCopiesOption?.closest('.card')
+        mount.innerHTML = `
+            <div class="receiptSettingsGrid">
+                <div>
+                    <div class="receiptFieldsGrid">
+                        <div class="field" style="margin-top:0">
+                            <label for="RECEIPT_TITLE">Título da comanda</label>
+                            <input id="RECEIPT_TITLE" maxlength="24" placeholder="Ex.: Cozinha" />
+                        </div>
+                        <div class="field" style="margin-top:0">
+                            <label for="RECEIPT_FOOTER_TEXT">Texto no final</label>
+                            <input id="RECEIPT_FOOTER_TEXT" maxlength="120" placeholder="Ex.: Obrigado!" />
+                        </div>
+                    </div>
 
-        if (!twoCopiesOption || !printerCard) return
+                    <div class="receiptToggles">
+                        ${toggle('RECEIPT_SHOW_ORDER_TIME', 'Horário do pedido')}
+                        ${toggle('RECEIPT_SHOW_CUSTOMER_NAME', 'Nome do cliente')}
+                        ${toggle('RECEIPT_SHOW_CUSTOMER_PHONE', 'Telefone')}
+                        ${toggle('RECEIPT_SHOW_ADDRESS', 'Endereço')}
+                        ${toggle('RECEIPT_SHOW_PAYMENT', 'Pagamento')}
+                        ${toggle('RECEIPT_SHOW_ITEM_PRICES', 'Preços')}
+                        ${toggle('RECEIPT_SHOW_SUBITEMS', 'Complementos')}
+                        ${toggle('RECEIPT_SHOW_OBSERVATIONS', 'Observações')}
+                        ${toggle('RECEIPT_SHOW_TOTALS', 'Totais')}
+                    </div>
 
-        injectStyles()
+                    <div class="buttonRow">
+                        <button class="ghost" id="receiptResetButton" type="button">Restaurar padrão</button>
+                    </div>
+                    <p class="localOnly">As alterações são salvas automaticamente no arquivo local deste computador. Nada é enviado ao Supabase.</p>
+                </div>
 
-        const section = createElement('div', {
-            id: SETTINGS_ID,
-            className: 'receiptSettingsBlock',
-        })
-        const title = createElement('h3', { className: 'receiptSettingsTitle' }, 'Comanda')
-        const description = createElement(
-            'p',
-            { className: 'receiptSettingsDescription' },
-            'Defina o nome de cada via e as informações de tempo que serão impressas.'
-        )
-        const namesGrid = createElement('div', { className: 'receiptNamesGrid' })
-
-        namesGrid.append(
-            createTextField('RECEIPT_NAME_1', 'Nome da comanda', 'Ex.: Cozinha'),
-            createTextField('RECEIPT_NAME_2', 'Nome da 2ª via', 'Ex.: Entrega')
-        )
-
-        section.append(
-            title,
-            description,
-            namesGrid,
-            createCheckbox(
-                'PRINT_READY_TIME',
-                'Imprimir tempo até pronto',
-                'Mostra o tempo de preparo configurado no restaurante.'
-            ),
-            createCheckbox(
-                'PRINT_DELIVERY_TIME',
-                'Imprimir tempo até entrega',
-                'Mostra o prazo estimado de entrega do pedido.'
-            )
-        )
-
-        twoCopiesOption.closest('.checkboxOption').insertAdjacentElement('afterend', section)
+                <div class="receiptPreviewWrap">
+                    <p class="receiptPreviewLabel">Prévia aproximada da comanda</p>
+                    <pre id="receiptPreview" class="receiptPreview"></pre>
+                </div>
+            </div>
+        `
 
         const config = await window.api.getConfig()
-        document.getElementById('RECEIPT_NAME_1').value = config.RECEIPT_NAME_1 || ''
-        document.getElementById('RECEIPT_NAME_2').value = config.RECEIPT_NAME_2 || ''
-        document.getElementById('PRINT_READY_TIME').checked = config.PRINT_READY_TIME === true
-        document.getElementById('PRINT_DELIVERY_TIME').checked = config.PRINT_DELIVERY_TIME === true
+        setFields(config)
+        renderPreview()
 
-        document.getElementById('RECEIPT_NAME_1').addEventListener('input', scheduleSave)
-        document.getElementById('RECEIPT_NAME_2').addEventListener('input', scheduleSave)
-        document.getElementById('PRINT_READY_TIME').addEventListener('change', saveSettings)
-        document.getElementById('PRINT_DELIVERY_TIME').addEventListener('change', saveSettings)
+        document.getElementById('RECEIPT_TITLE').addEventListener('input', scheduleSave)
+        document.getElementById('RECEIPT_FOOTER_TEXT').addEventListener('input', scheduleSave)
 
-        twoCopiesOption.addEventListener('change', updateCopyFields)
-        updateCopyFields()
+        for (const key of Object.keys(DEFAULTS)) {
+            if (typeof DEFAULTS[key] !== 'boolean') continue
+            document.getElementById(key)?.addEventListener('change', scheduleSave)
+        }
+
+        document.getElementById('receiptResetButton').addEventListener('click', () => {
+            resetSettings().catch(() => {})
+        })
     }
 
     mount().catch(() => {})
