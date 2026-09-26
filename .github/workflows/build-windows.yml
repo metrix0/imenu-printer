@@ -107,6 +107,30 @@ jobs:
           npm version $next --no-git-tag-version
           "VERSION=$next" >> $env:GITHUB_ENV
 
+      - name: Prepare Windows icon
+        shell: pwsh
+        run: |
+          Add-Type -AssemblyName System.Drawing
+          $source = [System.Drawing.Image]::FromFile((Resolve-Path 'favicon.png'))
+          try {
+            $canvas = New-Object System.Drawing.Bitmap 512, 512
+            $graphics = [System.Drawing.Graphics]::FromImage($canvas)
+            try {
+              $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+              $graphics.DrawImage($source, 0, 0, 512, 512)
+              $source.Dispose()
+              $source = $null
+              $canvas.Save((Resolve-Path '.').Path + '\\favicon.png', [System.Drawing.Imaging.ImageFormat]::Png)
+            }
+            finally {
+              $graphics.Dispose()
+              $canvas.Dispose()
+            }
+          }
+          finally {
+            if ($source) { $source.Dispose() }
+          }
+
       - name: Build or reuse installer release
         id: release
         shell: pwsh
