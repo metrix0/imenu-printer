@@ -36,6 +36,7 @@ const RECEIPT_BUILD_TIMEOUT_MS = 15 * 1000
 const UPDATE_INITIAL_DELAY_MS = 15 * 1000
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 const UPDATE_REPOSITORY = 'metrix0/imenu-printer'
+const SUPPORT_WHATSAPP_URL = 'https://wa.me/5519997235394?text=' + encodeURIComponent('Olá, preciso de ajuda com o iMenu Impressora!')
 
 let updateCheckInProgress = false
 let pendingUpdate = null
@@ -666,12 +667,15 @@ function getPrintCopies(config) {
     return config.PRINT_TWO_COPIES === true ? 2 : 1
 }
 
-async function printConfiguredCopies(text, config) {
+async function printConfiguredCopies(receipts, config) {
     const copies = getPrintCopies(config)
+    const receiptList = Array.isArray(receipts) ? receipts : [receipts]
 
     for (let copy = 1; copy <= copies; copy += 1) {
+        const receipt = receiptList[Math.min(copy - 1, receiptList.length - 1)]
+
         try {
-            await printRaw(text, config)
+            await printRaw(receipt, config)
         } catch (error) {
             if (copy > 1 && error && typeof error === 'object') {
                 error.printRetryable = false
@@ -1158,8 +1162,8 @@ async function reprintOrder(orderId) {
 
     sendLog(`Reimprimindo pedido #${displayId}${copies === 2 ? ' (2 vias)' : ''}`)
 
-    const receipt = await buildReceipt(supabase, orderId)
-    await printConfiguredCopies(receipt, config)
+    const receipts = await buildConfiguredReceipts(supabase, orderId, config)
+    await printConfiguredCopies(receipts, config)
 
     sendLog(`Reimpresso pedido #${displayId}${copies === 2 ? ' (2 vias)' : ''}`)
 
@@ -1240,25 +1244,40 @@ function paymentLabel(method) {
     return paymentMap[method] ?? method
 }
 
-async function buildReceipt(supabase, orderId) {
-    const receiptConfig = readConfig()
+async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via = 1) {
+    const receiptSetting = (suffix, fallback) => {
+        const primaryKey = `RECEIPT_${suffix}`
+        const viaKey = `RECEIPT_2_${suffix}`
+
+        if (
+            via === 2 &&
+            Object.prototype.hasOwnProperty.call(receiptConfig, viaKey)
+        ) {
+            return receiptConfig[viaKey]
+        }
+
+        if (Object.prototype.hasOwnProperty.call(receiptConfig, primaryKey)) {
+            return receiptConfig[primaryKey]
+        }
+
+        return fallback
+    }
+
     const receiptTitle = String(
-        receiptConfig.RECEIPT_TITLE ||
-        receiptConfig.RECEIPT_NAME_1 ||
-        'COZINHA'
+        receiptSetting('TITLE', receiptConfig.RECEIPT_NAME_1 || 'COZINHA')
     ).trim().slice(0, 24) || 'COZINHA'
-    const receiptFooter = String(receiptConfig.RECEIPT_FOOTER_TEXT || '')
+    const receiptFooter = String(receiptSetting('FOOTER_TEXT', ''))
         .trim()
         .slice(0, 120)
-    const showOrderTime = receiptConfig.RECEIPT_SHOW_ORDER_TIME !== false
-    const showCustomerName = receiptConfig.RECEIPT_SHOW_CUSTOMER_NAME !== false
-    const showCustomerPhone = receiptConfig.RECEIPT_SHOW_CUSTOMER_PHONE !== false
-    const showAddress = receiptConfig.RECEIPT_SHOW_ADDRESS !== false
-    const showPayment = receiptConfig.RECEIPT_SHOW_PAYMENT !== false
-    const showItemPrices = receiptConfig.RECEIPT_SHOW_ITEM_PRICES !== false
-    const showSubitems = receiptConfig.RECEIPT_SHOW_SUBITEMS !== false
-    const showObservations = receiptConfig.RECEIPT_SHOW_OBSERVATIONS !== false
-    const showTotals = receiptConfig.RECEIPT_SHOW_TOTALS !== false
+    const showOrderTime = receiptSetting('SHOW_ORDER_TIME', true) !== false
+    const showCustomerName = receiptSetting('SHOW_CUSTOMER_NAME', true) !== false
+    const showCustomerPhone = receiptSetting('SHOW_CUSTOMER_PHONE', true) !== false
+    const showAddress = receiptSetting('SHOW_ADDRESS', true) !== false
+    const showPayment = receiptSetting('SHOW_PAYMENT', true) !== false
+    const showItemPrices = receiptSetting('SHOW_ITEM_PRICES', true) !== false
+    const showSubitems = receiptSetting('SHOW_SUBITEMS', true) !== false
+    const showObservations = receiptSetting('SHOW_OBSERVATIONS', true) !== false
+    const showTotals = receiptSetting('SHOW_TOTALS', true) !== false
 
     const { data: order, error: orderErr } = await supabase
         .from('orders')
@@ -1464,6 +1483,17 @@ async function buildReceipt(supabase, orderId) {
     return text
 }
 
+async function buildConfiguredReceipts(supabase, orderId, config) {
+    const firstReceipt = await buildReceipt(supabase, orderId, config, 1)
+
+    if (getPrintCopies(config) !== 2) {
+        return [firstReceipt]
+    }
+
+    const secondReceipt = await buildReceipt(supabase, orderId, config, 2)
+    return [firstReceipt, secondReceipt]
+}
+
 async function startPrinterLoop() {
     if (printerLoopRunning) {
         return
@@ -1524,8 +1554,8 @@ async function startPrinterLoop() {
                 } else {
                     attempt = previousAttempts + 1
                     const copies = getPrintCopies(latestConfig)
-                    const receipt = await withTimeout(
-                        buildReceipt(supabase, job.order_id),
+                    const receipts = await withTimeout(
+                        buildConfiguredReceipts(supabase, job.order_id, latestConfig),
                         RECEIPT_BUILD_TIMEOUT_MS,
                         'Tempo limite ao preparar o pedido para impressão.'
                     )
@@ -1537,7 +1567,7 @@ async function startPrinterLoop() {
                             `Imprimindo pedido: ${job.id} (tentativa ${attempt}/${MAX_PRINT_ATTEMPTS})${copies === 2 ? ' (2 vias)' : ''}`
                         )
 
-                        await printConfiguredCopies(receipt, latestConfig)
+                        await printConfiguredCopies(receipts, latestConfig)
                         printSent = true
 
                         try {
@@ -1848,12 +1878,15 @@ function addVersionToHelpMenu() {
 }
 
 function createWindow() {
+    const appIconPath = path.join(__dirname, 'icon.ico')
+
     win = new BrowserWindow({
         width: 1080,
         height: 760,
         minWidth: 820,
         minHeight: 620,
         backgroundColor: '#f7f8fa',
+        icon: fs.existsSync(appIconPath) ? appIconPath : undefined,
         webPreferences: {
             preload: path.join(__dirname, 'preload.cjs'),
         },
@@ -1894,6 +1927,11 @@ ipcMain.handle('update:get-status', () => {
 
 ipcMain.handle('update:check', async () => {
     return await checkForAppUpdate()
+})
+
+ipcMain.handle('support:open', async () => {
+    await shell.openExternal(SUPPORT_WHATSAPP_URL)
+    return { ok: true }
 })
 
 ipcMain.handle('config:save', async (_, config) => {

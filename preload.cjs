@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
     logout: () => ipcRenderer.invoke('auth:logout'),
     getUpdateStatus: () => ipcRenderer.invoke('update:get-status'),
     checkForUpdates: () => ipcRenderer.invoke('update:check'),
+    openSupport: () => ipcRenderer.invoke('support:open'),
 
     onUpdateStatus: callback => {
         ipcRenderer.on('update:status', (_, status) => callback(status))

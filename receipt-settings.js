@@ -1,19 +1,43 @@
 (() => {
     const SAVE_DELAY_MS = 350
+    const VIA_SUFFIXES = [
+        'TITLE',
+        'FOOTER_TEXT',
+        'SHOW_ORDER_TIME',
+        'SHOW_CUSTOMER_NAME',
+        'SHOW_CUSTOMER_PHONE',
+        'SHOW_ADDRESS',
+        'SHOW_PAYMENT',
+        'SHOW_ITEM_PRICES',
+        'SHOW_SUBITEMS',
+        'SHOW_OBSERVATIONS',
+        'SHOW_TOTALS',
+    ]
     const DEFAULTS = {
-        RECEIPT_TITLE: 'COZINHA',
-        RECEIPT_FOOTER_TEXT: '',
-        RECEIPT_SHOW_ORDER_TIME: true,
-        RECEIPT_SHOW_CUSTOMER_NAME: true,
-        RECEIPT_SHOW_CUSTOMER_PHONE: true,
-        RECEIPT_SHOW_ADDRESS: true,
-        RECEIPT_SHOW_PAYMENT: true,
-        RECEIPT_SHOW_ITEM_PRICES: true,
-        RECEIPT_SHOW_SUBITEMS: true,
-        RECEIPT_SHOW_OBSERVATIONS: true,
-        RECEIPT_SHOW_TOTALS: true,
+        TITLE: 'COZINHA',
+        FOOTER_TEXT: '',
+        SHOW_ORDER_TIME: true,
+        SHOW_CUSTOMER_NAME: true,
+        SHOW_CUSTOMER_PHONE: true,
+        SHOW_ADDRESS: true,
+        SHOW_PAYMENT: true,
+        SHOW_ITEM_PRICES: true,
+        SHOW_SUBITEMS: true,
+        SHOW_OBSERVATIONS: true,
+        SHOW_TOTALS: true,
     }
+
     let saveTimer = null
+    let activeVia = 1
+    let via2Customized = false
+
+    function configKey(via, suffix) {
+        return via === 2 ? `RECEIPT_2_${suffix}` : `RECEIPT_${suffix}`
+    }
+
+    function fieldId(via, suffix) {
+        return `RECEIPT_V${via}_${suffix}`
+    }
 
     function checked(id) {
         return document.getElementById(id)?.checked === true
@@ -23,20 +47,33 @@
         return document.getElementById(id)?.value || ''
     }
 
-    function getSettings() {
+    function getViaSettings(via) {
         return {
-            RECEIPT_TITLE: value('RECEIPT_TITLE').trim().slice(0, 24) || 'COZINHA',
-            RECEIPT_FOOTER_TEXT: value('RECEIPT_FOOTER_TEXT').trim().slice(0, 120),
-            RECEIPT_SHOW_ORDER_TIME: checked('RECEIPT_SHOW_ORDER_TIME'),
-            RECEIPT_SHOW_CUSTOMER_NAME: checked('RECEIPT_SHOW_CUSTOMER_NAME'),
-            RECEIPT_SHOW_CUSTOMER_PHONE: checked('RECEIPT_SHOW_CUSTOMER_PHONE'),
-            RECEIPT_SHOW_ADDRESS: checked('RECEIPT_SHOW_ADDRESS'),
-            RECEIPT_SHOW_PAYMENT: checked('RECEIPT_SHOW_PAYMENT'),
-            RECEIPT_SHOW_ITEM_PRICES: checked('RECEIPT_SHOW_ITEM_PRICES'),
-            RECEIPT_SHOW_SUBITEMS: checked('RECEIPT_SHOW_SUBITEMS'),
-            RECEIPT_SHOW_OBSERVATIONS: checked('RECEIPT_SHOW_OBSERVATIONS'),
-            RECEIPT_SHOW_TOTALS: checked('RECEIPT_SHOW_TOTALS'),
+            TITLE: value(fieldId(via, 'TITLE')).trim().slice(0, 24) || 'COZINHA',
+            FOOTER_TEXT: value(fieldId(via, 'FOOTER_TEXT')).trim().slice(0, 120),
+            SHOW_ORDER_TIME: checked(fieldId(via, 'SHOW_ORDER_TIME')),
+            SHOW_CUSTOMER_NAME: checked(fieldId(via, 'SHOW_CUSTOMER_NAME')),
+            SHOW_CUSTOMER_PHONE: checked(fieldId(via, 'SHOW_CUSTOMER_PHONE')),
+            SHOW_ADDRESS: checked(fieldId(via, 'SHOW_ADDRESS')),
+            SHOW_PAYMENT: checked(fieldId(via, 'SHOW_PAYMENT')),
+            SHOW_ITEM_PRICES: checked(fieldId(via, 'SHOW_ITEM_PRICES')),
+            SHOW_SUBITEMS: checked(fieldId(via, 'SHOW_SUBITEMS')),
+            SHOW_OBSERVATIONS: checked(fieldId(via, 'SHOW_OBSERVATIONS')),
+            SHOW_TOTALS: checked(fieldId(via, 'SHOW_TOTALS')),
         }
+    }
+
+    function getSettings() {
+        const settings = {}
+
+        for (const via of [1, 2]) {
+            const viaSettings = getViaSettings(via)
+            for (const suffix of VIA_SUFFIXES) {
+                settings[configKey(via, suffix)] = viaSettings[suffix]
+            }
+        }
+
+        return settings
     }
 
     function receiptRow(left, right, width = 40) {
@@ -49,45 +86,49 @@
 
     function renderPreview() {
         const preview = document.getElementById('receiptPreview')
+        const label = document.getElementById('receiptPreviewLabel')
         if (!preview) return
 
-        const settings = getSettings()
+        const settings = getViaSettings(activeVia)
         const lines = []
-        lines.push(settings.RECEIPT_TITLE.toUpperCase())
+
+        if (label) label.textContent = `Prévia aproximada — Via ${activeVia}`
+
+        lines.push(settings.TITLE.toUpperCase())
         lines.push('----------------------------------------')
         lines.push('PEDIDO #42')
-        if (settings.RECEIPT_SHOW_ORDER_TIME) lines.push('Hora: 26/09/2026 12:30:00')
+        if (settings.SHOW_ORDER_TIME) lines.push('Hora: 26/09/2026 12:30:00')
         lines.push('Tipo: Entrega')
-        if (settings.RECEIPT_SHOW_CUSTOMER_NAME) lines.push('Cliente: Maria')
-        if (settings.RECEIPT_SHOW_CUSTOMER_PHONE) lines.push('Telefone: (11) 99999-9999')
-        if (settings.RECEIPT_SHOW_ADDRESS) {
+        if (settings.SHOW_CUSTOMER_NAME) lines.push('Cliente: Maria')
+        if (settings.SHOW_CUSTOMER_PHONE) lines.push('Telefone: (11) 99999-9999')
+        if (settings.SHOW_ADDRESS) {
             lines.push('Endereco:')
             lines.push('Rua Exemplo, 123 - Centro')
         }
-        if (settings.RECEIPT_SHOW_PAYMENT) lines.push('Pagamento: Pix (pago online)')
+        if (settings.SHOW_PAYMENT) lines.push('Pagamento: Pix (pago online)')
         lines.push('----------------------------------------')
         lines.push(
-            settings.RECEIPT_SHOW_ITEM_PRICES
+            settings.SHOW_ITEM_PRICES
                 ? receiptRow('2x X-Burger', 'R$ 38,00')
                 : '2x X-Burger'
         )
-        if (settings.RECEIPT_SHOW_SUBITEMS) {
+        if (settings.SHOW_SUBITEMS) {
             lines.push(
-                settings.RECEIPT_SHOW_ITEM_PRICES
+                settings.SHOW_ITEM_PRICES
                     ? receiptRow('  - 1x Bacon', '+R$ 3,00')
                     : '  - 1x Bacon'
             )
         }
-        if (settings.RECEIPT_SHOW_OBSERVATIONS) lines.push('  OBS: Sem cebola')
+        if (settings.SHOW_OBSERVATIONS) lines.push('  OBS: Sem cebola')
         lines.push('----------------------------------------')
-        if (settings.RECEIPT_SHOW_TOTALS) {
+        if (settings.SHOW_TOTALS) {
             lines.push(receiptRow('Subtotal', 'R$ 41,00'))
             lines.push(receiptRow('Entrega', 'R$ 5,00'))
             lines.push(receiptRow('TOTAL', 'R$ 46,00'))
         }
-        if (settings.RECEIPT_FOOTER_TEXT) {
+        if (settings.FOOTER_TEXT) {
             lines.push('')
-            lines.push(settings.RECEIPT_FOOTER_TEXT)
+            lines.push(settings.FOOTER_TEXT)
         }
 
         preview.textContent = lines.join('\n')
@@ -107,7 +148,8 @@
         }, SAVE_DELAY_MS)
     }
 
-    function toggle(id, title) {
+    function toggle(via, suffix, title) {
+        const id = fieldId(via, suffix)
         return `
             <label class="checkboxOption" for="${id}">
                 <input id="${id}" type="checkbox" />
@@ -118,23 +160,129 @@
         `
     }
 
-    function setFields(config) {
-        const title = document.getElementById('RECEIPT_TITLE')
-        const footer = document.getElementById('RECEIPT_FOOTER_TEXT')
-        title.value = config.RECEIPT_TITLE || config.RECEIPT_NAME_1 || DEFAULTS.RECEIPT_TITLE
-        footer.value = config.RECEIPT_FOOTER_TEXT || ''
+    function viaPanel(via) {
+        return `
+            <div id="receiptViaPanel${via}" class="${via === 1 ? '' : 'hidden'}">
+                <div class="receiptFieldsGrid">
+                    <div class="field" style="margin-top:0">
+                        <label for="${fieldId(via, 'TITLE')}">Título da Via ${via}</label>
+                        <input id="${fieldId(via, 'TITLE')}" maxlength="24" placeholder="Ex.: Cozinha" />
+                    </div>
+                    <div class="field" style="margin-top:0">
+                        <label for="${fieldId(via, 'FOOTER_TEXT')}">Texto no final</label>
+                        <input id="${fieldId(via, 'FOOTER_TEXT')}" maxlength="120" placeholder="Ex.: Obrigado!" />
+                    </div>
+                </div>
 
-        for (const [key, defaultValue] of Object.entries(DEFAULTS)) {
-            if (typeof defaultValue !== 'boolean') continue
-            const element = document.getElementById(key)
-            if (element) element.checked = config[key] !== false
+                <div class="receiptToggles">
+                    ${toggle(via, 'SHOW_ORDER_TIME', 'Horário do pedido')}
+                    ${toggle(via, 'SHOW_CUSTOMER_NAME', 'Nome do cliente')}
+                    ${toggle(via, 'SHOW_CUSTOMER_PHONE', 'Telefone')}
+                    ${toggle(via, 'SHOW_ADDRESS', 'Endereço')}
+                    ${toggle(via, 'SHOW_PAYMENT', 'Pagamento')}
+                    ${toggle(via, 'SHOW_ITEM_PRICES', 'Preços')}
+                    ${toggle(via, 'SHOW_SUBITEMS', 'Complementos')}
+                    ${toggle(via, 'SHOW_OBSERVATIONS', 'Observações')}
+                    ${toggle(via, 'SHOW_TOTALS', 'Totais')}
+                </div>
+            </div>
+        `
+    }
+
+    function resolvedConfigValue(config, via, suffix) {
+        const key = configKey(via, suffix)
+
+        if (via === 2 && Object.prototype.hasOwnProperty.call(config, key)) {
+            return config[key]
+        }
+
+        const primaryKey = configKey(1, suffix)
+        if (Object.prototype.hasOwnProperty.call(config, primaryKey)) {
+            return config[primaryKey]
+        }
+
+        if (suffix === 'TITLE' && config.RECEIPT_NAME_1) {
+            return config.RECEIPT_NAME_1
+        }
+
+        return DEFAULTS[suffix]
+    }
+
+    function setViaFields(config, via) {
+        document.getElementById(fieldId(via, 'TITLE')).value =
+            String(resolvedConfigValue(config, via, 'TITLE') || 'COZINHA')
+        document.getElementById(fieldId(via, 'FOOTER_TEXT')).value =
+            String(resolvedConfigValue(config, via, 'FOOTER_TEXT') || '')
+
+        for (const suffix of VIA_SUFFIXES) {
+            if (typeof DEFAULTS[suffix] !== 'boolean') continue
+            const element = document.getElementById(fieldId(via, suffix))
+            if (element) element.checked = resolvedConfigValue(config, via, suffix) !== false
+        }
+    }
+
+    function copyVia1ToVia2() {
+        const via1 = getViaSettings(1)
+
+        for (const suffix of VIA_SUFFIXES) {
+            const element = document.getElementById(fieldId(2, suffix))
+            if (!element) continue
+
+            if (typeof DEFAULTS[suffix] === 'boolean') {
+                element.checked = via1[suffix] === true
+            } else {
+                element.value = via1[suffix]
+            }
+        }
+
+        via2Customized = true
+        scheduleSave()
+    }
+
+    function selectVia(via) {
+        activeVia = via
+
+        for (const candidate of [1, 2]) {
+            document.getElementById(`receiptViaPanel${candidate}`)?.classList.toggle(
+                'hidden',
+                candidate !== via
+            )
+            document.getElementById(`receiptViaTab${candidate}`)?.classList.toggle(
+                'active',
+                candidate === via
+            )
+        }
+
+        renderPreview()
+    }
+
+    function setTwoCopies(enabled) {
+        const tabs = document.getElementById('receiptViaTabs')
+        if (tabs) tabs.classList.toggle('hidden', !enabled)
+
+        if (enabled && !via2Customized) {
+            copyVia1ToVia2()
+        }
+
+        if (!enabled && activeVia === 2) {
+            selectVia(1)
         }
     }
 
     async function resetSettings() {
-        setFields(DEFAULTS)
+        const resetConfig = {}
+
+        for (const via of [1, 2]) {
+            for (const suffix of VIA_SUFFIXES) {
+                resetConfig[configKey(via, suffix)] = DEFAULTS[suffix]
+            }
+        }
+
+        setViaFields(resetConfig, 1)
+        setViaFields(resetConfig, 2)
+        via2Customized = true
         renderPreview()
-        await window.api.saveConfig(DEFAULTS)
+        await window.api.saveConfig(resetConfig)
     }
 
     async function mount() {
@@ -145,56 +293,66 @@
         mount.innerHTML = `
             <div class="receiptSettingsGrid">
                 <div>
-                    <div class="receiptFieldsGrid">
-                        <div class="field" style="margin-top:0">
-                            <label for="RECEIPT_TITLE">Título da comanda</label>
-                            <input id="RECEIPT_TITLE" maxlength="24" placeholder="Ex.: Cozinha" />
-                        </div>
-                        <div class="field" style="margin-top:0">
-                            <label for="RECEIPT_FOOTER_TEXT">Texto no final</label>
-                            <input id="RECEIPT_FOOTER_TEXT" maxlength="120" placeholder="Ex.: Obrigado!" />
-                        </div>
+                    <div id="receiptViaTabs" class="receiptViaTabs hidden">
+                        <button id="receiptViaTab1" class="receiptViaTab active" type="button">Via 1</button>
+                        <button id="receiptViaTab2" class="receiptViaTab" type="button">Via 2</button>
                     </div>
 
-                    <div class="receiptToggles">
-                        ${toggle('RECEIPT_SHOW_ORDER_TIME', 'Horário do pedido')}
-                        ${toggle('RECEIPT_SHOW_CUSTOMER_NAME', 'Nome do cliente')}
-                        ${toggle('RECEIPT_SHOW_CUSTOMER_PHONE', 'Telefone')}
-                        ${toggle('RECEIPT_SHOW_ADDRESS', 'Endereço')}
-                        ${toggle('RECEIPT_SHOW_PAYMENT', 'Pagamento')}
-                        ${toggle('RECEIPT_SHOW_ITEM_PRICES', 'Preços')}
-                        ${toggle('RECEIPT_SHOW_SUBITEMS', 'Complementos')}
-                        ${toggle('RECEIPT_SHOW_OBSERVATIONS', 'Observações')}
-                        ${toggle('RECEIPT_SHOW_TOTALS', 'Totais')}
-                    </div>
+                    ${viaPanel(1)}
+                    ${viaPanel(2)}
 
                     <div class="buttonRow">
                         <button class="ghost" id="receiptResetButton" type="button">Restaurar padrão</button>
                     </div>
-                    <p class="localOnly">As alterações são salvas automaticamente no arquivo local deste computador. Nada é enviado ao Supabase.</p>
+                    <p class="localOnly">As alterações são salvas automaticamente somente neste computador. Nada é enviado ao Supabase.</p>
                 </div>
 
                 <div class="receiptPreviewWrap">
-                    <p class="receiptPreviewLabel">Prévia aproximada da comanda</p>
+                    <p id="receiptPreviewLabel" class="receiptPreviewLabel">Prévia aproximada — Via 1</p>
                     <pre id="receiptPreview" class="receiptPreview"></pre>
                 </div>
             </div>
         `
 
         const config = await window.api.getConfig()
-        setFields(config)
-        renderPreview()
+        via2Customized = VIA_SUFFIXES.some(suffix =>
+            Object.prototype.hasOwnProperty.call(config, configKey(2, suffix))
+        )
 
-        document.getElementById('RECEIPT_TITLE').addEventListener('input', scheduleSave)
-        document.getElementById('RECEIPT_FOOTER_TEXT').addEventListener('input', scheduleSave)
+        setViaFields(config, 1)
+        setViaFields(config, 2)
 
-        for (const key of Object.keys(DEFAULTS)) {
-            if (typeof DEFAULTS[key] !== 'boolean') continue
-            document.getElementById(key)?.addEventListener('change', scheduleSave)
+        for (const via of [1, 2]) {
+            document.getElementById(fieldId(via, 'TITLE'))?.addEventListener('input', () => {
+                if (via === 2) via2Customized = true
+                scheduleSave()
+            })
+            document.getElementById(fieldId(via, 'FOOTER_TEXT'))?.addEventListener('input', () => {
+                if (via === 2) via2Customized = true
+                scheduleSave()
+            })
+
+            for (const suffix of VIA_SUFFIXES) {
+                if (typeof DEFAULTS[suffix] !== 'boolean') continue
+                document.getElementById(fieldId(via, suffix))?.addEventListener('change', () => {
+                    if (via === 2) via2Customized = true
+                    scheduleSave()
+                })
+            }
         }
 
+        document.getElementById('receiptViaTab1').addEventListener('click', () => selectVia(1))
+        document.getElementById('receiptViaTab2').addEventListener('click', () => selectVia(2))
         document.getElementById('receiptResetButton').addEventListener('click', () => {
             resetSettings().catch(() => {})
+        })
+
+        const copiesEnabled = config.PRINT_TWO_COPIES === true
+        setTwoCopies(copiesEnabled)
+        selectVia(1)
+
+        window.addEventListener('imenu:copies-changed', event => {
+            setTwoCopies(event.detail?.enabled === true)
         })
     }
 

@@ -29,6 +29,7 @@
       "preload.cjs",
       "index.html",
       "receipt-settings.js",
+      "icon.ico",
       "package.json"
     ],
     "asarUnpack": [
@@ -37,7 +38,8 @@
       "node_modules/node-gyp-build/**/*"
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "icon": "icon.ico"
     },
     "nsis": {
       "oneClick": false,
