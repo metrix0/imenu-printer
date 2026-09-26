@@ -49,7 +49,7 @@
 
     function getViaSettings(via) {
         return {
-            TITLE: value(fieldId(via, 'TITLE')).trim().slice(0, 24) || 'COZINHA',
+            TITLE: value(fieldId(via, 'TITLE')).trim().slice(0, 24) || (via === 2 ? 'ENTREGA' : 'COZINHA'),
             FOOTER_TEXT: value(fieldId(via, 'FOOTER_TEXT')).trim().slice(0, 120),
             SHOW_ORDER_TIME: checked(fieldId(via, 'SHOW_ORDER_TIME')),
             SHOW_CUSTOMER_NAME: checked(fieldId(via, 'SHOW_CUSTOMER_NAME')),
@@ -201,6 +201,10 @@
             return config[key]
         }
 
+        if (via === 2 && suffix === 'TITLE') {
+            return 'ENTREGA'
+        }
+
         const primaryKey = configKey(1, suffix)
         if (Object.prototype.hasOwnProperty.call(config, primaryKey)) {
             return config[primaryKey]
@@ -215,7 +219,7 @@
 
     function setViaFields(config, via) {
         document.getElementById(fieldId(via, 'TITLE')).value =
-            String(resolvedConfigValue(config, via, 'TITLE') || 'COZINHA')
+            String(resolvedConfigValue(config, via, 'TITLE') || (via === 2 ? 'ENTREGA' : 'COZINHA'))
         document.getElementById(fieldId(via, 'FOOTER_TEXT')).value =
             String(resolvedConfigValue(config, via, 'FOOTER_TEXT') || '')
 
@@ -235,6 +239,8 @@
 
             if (typeof DEFAULTS[suffix] === 'boolean') {
                 element.checked = via1[suffix] === true
+            } else if (suffix === 'TITLE') {
+                element.value = 'ENTREGA'
             } else {
                 element.value = via1[suffix]
             }
@@ -279,7 +285,8 @@
 
         for (const via of [1, 2]) {
             for (const suffix of VIA_SUFFIXES) {
-                resetConfig[configKey(via, suffix)] = DEFAULTS[suffix]
+                resetConfig[configKey(via, suffix)] =
+                    via === 2 && suffix === 'TITLE' ? 'ENTREGA' : DEFAULTS[suffix]
             }
         }
 
