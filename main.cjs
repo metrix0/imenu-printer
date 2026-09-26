@@ -392,7 +392,7 @@ function schedulePendingUpdateInstall() {
         "$ErrorActionPreference = 'Stop'",
         `$logPath = '${safeLogPath}'`,
         `$appPath = '${appExecutablePath}'`,
-        'function Write-UpdateLog([string]$message) { Add-Content -LiteralPath $logPath -Value (\'[" + "(Get-Date -Format o) + "] \' + $message) }',
+        "function Write-UpdateLog([string]$message) { Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format o) + '] ' + $message) }",
         'try {',
         `  Write-UpdateLog 'Aguardando iMenu fechar completamente. PID principal: ${currentPid}'`,
         '  $deadline = (Get-Date).AddMinutes(2)',
