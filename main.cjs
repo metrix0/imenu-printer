@@ -1878,7 +1878,7 @@ function addVersionToHelpMenu() {
 }
 
 function createWindow() {
-    const appIconPath = path.join(__dirname, 'icon.ico')
+    const appIconPath = path.join(__dirname, 'app-icon.png')
 
     win = new BrowserWindow({
         width: 1080,

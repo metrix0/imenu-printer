@@ -65,11 +65,16 @@
 
     function getSettings() {
         const settings = {}
+        const via1Settings = getViaSettings(1)
 
-        for (const via of [1, 2]) {
-            const viaSettings = getViaSettings(via)
+        for (const suffix of VIA_SUFFIXES) {
+            settings[configKey(1, suffix)] = via1Settings[suffix]
+        }
+
+        if (via2Customized) {
+            const via2Settings = getViaSettings(2)
             for (const suffix of VIA_SUFFIXES) {
-                settings[configKey(via, suffix)] = viaSettings[suffix]
+                settings[configKey(2, suffix)] = via2Settings[suffix]
             }
         }
 

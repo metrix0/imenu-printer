@@ -29,7 +29,7 @@
       "preload.cjs",
       "index.html",
       "receipt-settings.js",
-      "icon.ico",
+      "app-icon.png",
       "package.json"
     ],
     "asarUnpack": [
@@ -39,7 +39,7 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "icon.ico"
+      "icon": "app-icon.png"
     },
     "nsis": {
       "oneClick": false,
