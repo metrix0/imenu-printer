@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('api', {
     logout: () => ipcRenderer.invoke('auth:logout'),
     getUpdateStatus: () => ipcRenderer.invoke('update:get-status'),
     checkForUpdates: () => ipcRenderer.invoke('update:check'),
+    installUpdate: () => ipcRenderer.invoke('update:install'),
     openSupport: () => ipcRenderer.invoke('support:open'),
     quitApplication: () => ipcRenderer.invoke('app:quit'),
 

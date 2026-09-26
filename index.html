@@ -885,7 +885,7 @@
 
             <div class="updateCard">
                 <p id="updateStatus" class="updateStatus">Atualizações automáticas ativadas.</p>
-                <button id="updateCheckButton" class="updateCheckButton" type="button" onclick="checkForUpdates()">
+                <button id="updateCheckButton" class="updateCheckButton" type="button" onclick="handleUpdateAction()">
                     Verificar atualizações
                 </button>
             </div>
@@ -1028,6 +1028,7 @@
     ]
 
     let currentConfig = {}
+    let currentUpdateStatus = null
 
     function scrollToSection(id) {
         document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -1038,10 +1039,27 @@
         const button = document.getElementById('updateCheckButton')
         if (!label || !status) return
 
+        currentUpdateStatus = status
         label.textContent = status.message || 'Atualizações automáticas ativadas.'
         if (button) {
-            button.disabled = status.status === 'checking' || status.status === 'downloading'
+            button.textContent = status.status === 'ready'
+                ? 'Clique aqui para atualizar'
+                : 'Verificar atualizações'
+            button.disabled =
+                status.status === 'checking' ||
+                status.status === 'downloading' ||
+                status.status === 'installing'
         }
+    }
+
+    async function handleUpdateAction() {
+        if (currentUpdateStatus?.status === 'ready') {
+            const result = await window.api.installUpdate()
+            if (result?.status) updateUpdateStatus(result.status)
+            return
+        }
+
+        await checkForUpdates()
     }
 
     async function checkForUpdates() {

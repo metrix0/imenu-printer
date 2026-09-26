@@ -5,7 +5,6 @@ const fs = require('fs')
 const http = require('http')
 const https = require('https')
 const net = require('net')
-const os = require('os')
 const { exec, spawn } = require('child_process')
 const { createClient } = require('@supabase/supabase-js')
 const { SerialPort } = require('serialport')
@@ -349,7 +348,7 @@ async function checkForAppUpdate() {
             status: 'ready',
             availableVersion: version,
             progress: 100,
-            message: `Versão ${version} pronta. Use "Fechar Aplicativo" para instalar.`,
+            message: `Versão ${version} pronta.`,
         })
     } catch (error) {
         return publishUpdateStatus({
@@ -362,7 +361,7 @@ async function checkForAppUpdate() {
     }
 }
 
-function schedulePendingUpdateInstall() {
+function installPendingUpdate() {
     if (
         updateInstallScheduled ||
         isLegacyBuild() ||
@@ -370,66 +369,22 @@ function schedulePendingUpdateInstall() {
         !pendingUpdate?.installerPath ||
         !fs.existsSync(pendingUpdate.installerPath)
     ) {
-        return
+        return {
+            ok: false,
+            status: publishUpdateStatus({
+                status: 'error',
+                progress: null,
+                message: 'A atualização ainda não está pronta.',
+            }),
+        }
     }
 
     updateInstallScheduled = true
-    const scriptPath = path.join(
-        os.tmpdir(),
-        `imenu_update_${Date.now()}.ps1`
-    )
-    const logPath = path.join(
-        path.dirname(pendingUpdate.installerPath),
-        'install.log'
-    )
-    const escapePowerShell = value => String(value).replace(/'/g, "''")
-    const installerPath = escapePowerShell(pendingUpdate.installerPath)
-    const appExecutablePath = escapePowerShell(process.execPath)
-    const safeScriptPath = escapePowerShell(scriptPath)
-    const safeLogPath = escapePowerShell(logPath)
-    const currentPid = process.pid
-    const script = [
-        "$ErrorActionPreference = 'Stop'",
-        `$logPath = '${safeLogPath}'`,
-        `$appPath = '${appExecutablePath}'`,
-        "function Write-UpdateLog([string]$message) { Add-Content -LiteralPath $logPath -Value ('[' + (Get-Date -Format o) + '] ' + $message) }",
-        'try {',
-        `  Write-UpdateLog 'Aguardando iMenu fechar completamente. PID principal: ${currentPid}'`,
-        '  $deadline = (Get-Date).AddMinutes(2)',
-        '  do {',
-        '    $appProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.ExecutablePath -eq $appPath })',
-        '    if ($appProcesses.Count -eq 0) { break }',
-        '    Start-Sleep -Milliseconds 250',
-        '  } while ((Get-Date) -lt $deadline)',
-        '  if ($appProcesses.Count -gt 0) { throw \'O iMenu Impressora não encerrou completamente antes da atualização.\' }',
-        '  Start-Sleep -Milliseconds 750',
-        "  if (-not (Test-Path -LiteralPath '${installerPath}')) { throw 'Instalador baixado não foi encontrado.' }",
-        "  Write-UpdateLog 'Iniciando instalador.'",
-        `  $installer = Start-Process -FilePath '${installerPath}' -ArgumentList '/S' -PassThru -Wait`,
-        "  if ($installer.ExitCode -ne 0) { throw ('Instalador finalizou com código ' + $installer.ExitCode) }",
-        "  Write-UpdateLog 'Instalação concluída com sucesso.'",
-        '}',
-        'catch {',
-        "  Write-UpdateLog ('Falha na instalação: ' + $_.Exception.Message)",
-        '}',
-        'finally {',
-        `  Remove-Item -LiteralPath '${safeScriptPath}' -Force -ErrorAction SilentlyContinue`,
-        '}',
-    ].join('\r\n')
 
     try {
-        fs.writeFileSync(scriptPath, script, 'utf8')
         const child = spawn(
-            'powershell.exe',
-            [
-                '-NoProfile',
-                '-ExecutionPolicy',
-                'Bypass',
-                '-WindowStyle',
-                'Hidden',
-                '-File',
-                scriptPath,
-            ],
+            pendingUpdate.installerPath,
+            ['/S'],
             {
                 detached: true,
                 stdio: 'ignore',
@@ -437,9 +392,28 @@ function schedulePendingUpdateInstall() {
             }
         )
         child.unref()
+
+        const status = publishUpdateStatus({
+            status: 'installing',
+            availableVersion: pendingUpdate.version,
+            progress: 100,
+            message: 'Instalando atualização...',
+        })
+
+        forceQuit = true
+        setTimeout(() => app.quit(), 250)
+
+        return { ok: true, status }
     } catch (error) {
         updateInstallScheduled = false
-        sendLog(`Atualização baixada, mas não foi possível agendar a instalação: ${error.message}`)
+        return {
+            ok: false,
+            status: publishUpdateStatus({
+                status: 'error',
+                progress: null,
+                message: 'Não foi possível iniciar a atualização.',
+            }),
+        }
     }
 }
 
@@ -1954,7 +1928,6 @@ function quitApplication() {
     if (forceQuit) return
 
     forceQuit = true
-    schedulePendingUpdateInstall()
     app.quit()
 }
 
@@ -2004,7 +1977,6 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
     forceQuit = true
-    schedulePendingUpdateInstall()
 })
 
 app.on('will-quit', () => {
@@ -2024,6 +1996,10 @@ ipcMain.handle('update:get-status', () => {
 
 ipcMain.handle('update:check', async () => {
     return await checkForAppUpdate()
+})
+
+ipcMain.handle('update:install', () => {
+    return installPendingUpdate()
 })
 
 ipcMain.handle('support:open', async () => {

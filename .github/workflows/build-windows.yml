@@ -109,26 +109,14 @@ jobs:
 
       - name: Prepare Windows icon
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.IMENU_SYNC_TOKEN }}
         run: |
-          Add-Type -AssemblyName System.Drawing
-          $source = [System.Drawing.Image]::FromFile((Resolve-Path 'favicon.png'))
-          try {
-            $canvas = New-Object System.Drawing.Bitmap 512, 512
-            $graphics = [System.Drawing.Graphics]::FromImage($canvas)
-            try {
-              $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
-              $graphics.DrawImage($source, 0, 0, 512, 512)
-              $source.Dispose()
-              $source = $null
-              $canvas.Save((Resolve-Path '.').Path + '\\favicon.png', [System.Drawing.Imaging.ImageFormat]::Png)
-            }
-            finally {
-              $graphics.Dispose()
-              $canvas.Dispose()
-            }
-          }
-          finally {
-            if ($source) { $source.Dispose() }
+          $iconBase64 = gh api "repos/metrix0/imenu/contents/public/icons/favicon.ico?ref=preview" --jq ".content"
+          $iconBytes = [Convert]::FromBase64String(($iconBase64 -replace '\\s', ''))
+          [IO.File]::WriteAllBytes((Join-Path (Resolve-Path '.').Path 'favicon.ico'), $iconBytes)
+          if ((Get-Item 'favicon.ico').Length -lt 10000) {
+            throw "Downloaded favicon.ico is invalid."
           }
 
       - name: Build or reuse installer release

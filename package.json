@@ -30,6 +30,7 @@
       "index.html",
       "receipt-settings.js",
       "favicon.png",
+      "favicon.ico",
       "package.json"
     ],
     "asarUnpack": [
@@ -39,10 +40,11 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "favicon.png"
+      "icon": "favicon.ico"
     },
     "nsis": {
       "oneClick": false,
+      "include": "build/installer.nsh",
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
