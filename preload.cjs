@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('api', {
     getUpdateStatus: () => ipcRenderer.invoke('update:get-status'),
     checkForUpdates: () => ipcRenderer.invoke('update:check'),
     openSupport: () => ipcRenderer.invoke('support:open'),
+    quitApplication: () => ipcRenderer.invoke('app:quit'),
 
     onUpdateStatus: callback => {
         ipcRenderer.on('update:status', (_, status) => callback(status))

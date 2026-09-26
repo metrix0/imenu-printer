@@ -1,5 +1,5 @@
 const WebSocket = require('ws')
-const { app, BrowserWindow, ipcMain, Menu, MenuItem, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, MenuItem, shell, Tray } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const http = require('http')
@@ -24,6 +24,8 @@ const GOOGLE_AUTH_CALLBACK_URL = `http://${GOOGLE_AUTH_CALLBACK_HOST}:${GOOGLE_A
 const GOOGLE_AUTH_TIMEOUT_MS = 5 * 60 * 1000
 
 let win = null
+let tray = null
+let forceQuit = false
 let printerLoopRunning = false
 let stopPrinterLoop = false
 let googleLoginInProgress = false
@@ -347,7 +349,7 @@ async function checkForAppUpdate() {
             status: 'ready',
             availableVersion: version,
             progress: 100,
-            message: `Versão ${version} pronta. Será instalada ao fechar o aplicativo.`,
+            message: `Versão ${version} pronta. Use "Fechar Aplicativo" para instalar.`,
         })
     } catch (error) {
         return publishUpdateStatus({
@@ -376,12 +378,22 @@ function schedulePendingUpdateInstall() {
         os.tmpdir(),
         `imenu_update_${Date.now()}.ps1`
     )
+    const logPath = path.join(
+        path.dirname(pendingUpdate.installerPath),
+        'install.log'
+    )
     const escapePowerShell = value => String(value).replace(/'/g, "''")
     const installerPath = escapePowerShell(pendingUpdate.installerPath)
     const safeScriptPath = escapePowerShell(scriptPath)
+    const safeLogPath = escapePowerShell(logPath)
+    const currentPid = process.pid
     const script = [
-        'Start-Sleep -Seconds 3',
-        `Start-Process -FilePath '${installerPath}' -ArgumentList '/S' -Wait`,
+        "$ErrorActionPreference = 'Stop'",
+        `Add-Content -LiteralPath '${safeLogPath}' -Value ('[' + (Get-Date -Format o) + '] Aguardando iMenu fechar. PID: ${currentPid}')`,
+        `for ($i = 0; $i -lt 240; $i++) { if (-not (Get-Process -Id ${currentPid} -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 250 }`,
+        `Add-Content -LiteralPath '${safeLogPath}' -Value ('[' + (Get-Date -Format o) + '] Iniciando instalador.')`,
+        `$installer = Start-Process -FilePath '${installerPath}' -ArgumentList '/S' -PassThru -Wait`,
+        `Add-Content -LiteralPath '${safeLogPath}' -Value ('[' + (Get-Date -Format o) + '] Instalador finalizado. ExitCode: ' + $installer.ExitCode)`,
         `Remove-Item -LiteralPath '${safeScriptPath}' -Force -ErrorAction SilentlyContinue`,
     ].join('\r\n')
 
@@ -1877,6 +1889,51 @@ function addVersionToHelpMenu() {
     }
 }
 
+function showMainWindow() {
+    if (!win || win.isDestroyed()) return
+
+    win.show()
+    if (win.isMinimized()) win.restore()
+    win.focus()
+}
+
+async function createTray() {
+    if (tray) return tray
+
+    const appIconPath = path.join(__dirname, 'app-icon.png')
+    let trayIcon = appIconPath
+
+    if (!fs.existsSync(appIconPath)) {
+        trayIcon = await app.getFileIcon(process.execPath)
+    }
+
+    tray = new Tray(trayIcon)
+    tray.setToolTip('iMenu Impressora')
+    tray.setContextMenu(Menu.buildFromTemplate([
+        {
+            label: 'Abrir iMenu Impressora',
+            click: showMainWindow,
+        },
+        { type: 'separator' },
+        {
+            label: 'Fechar Aplicativo',
+            click: quitApplication,
+        },
+    ]))
+    tray.on('click', showMainWindow)
+    tray.on('double-click', showMainWindow)
+
+    return tray
+}
+
+function quitApplication() {
+    if (forceQuit) return
+
+    forceQuit = true
+    schedulePendingUpdateInstall()
+    app.quit()
+}
+
 function createWindow() {
     const appIconPath = path.join(__dirname, 'app-icon.png')
 
@@ -1894,6 +1951,13 @@ function createWindow() {
 
     win.loadFile('index.html')
 
+    win.on('close', event => {
+        if (forceQuit || !tray) return
+
+        event.preventDefault()
+        win.hide()
+    })
+
     win.webContents.once('did-finish-load', () => {
         publishUpdateStatus()
         const config = readConfig()
@@ -1907,14 +1971,23 @@ function createWindow() {
     })
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+    await createTray()
     createWindow()
     addVersionToHelpMenu()
     scheduleUpdateChecks()
 })
 
 app.on('before-quit', () => {
+    forceQuit = true
     schedulePendingUpdateInstall()
+})
+
+app.on('will-quit', () => {
+    if (tray) {
+        tray.destroy()
+        tray = null
+    }
 })
 
 ipcMain.handle('config:get', () => {
@@ -1931,6 +2004,11 @@ ipcMain.handle('update:check', async () => {
 
 ipcMain.handle('support:open', async () => {
     await shell.openExternal(SUPPORT_WHATSAPP_URL)
+    return { ok: true }
+})
+
+ipcMain.handle('app:quit', () => {
+    quitApplication()
     return { ok: true }
 })
 
