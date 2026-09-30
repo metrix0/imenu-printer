@@ -668,6 +668,35 @@
             min-height: 58px;
         }
 
+        .receiptLogoControls {
+            margin-top: 12px;
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--background);
+        }
+
+        .receiptLogoFileRow {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr);
+            align-items: center;
+            gap: 10px;
+        }
+
+        .receiptLogoFileRow button {
+            min-height: 44px;
+            white-space: nowrap;
+        }
+
+        .receiptLogoFileName {
+            min-width: 0;
+            overflow: hidden;
+            color: var(--muted);
+            font-size: 12px;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
         .receiptPreviewWrap {
             position: sticky;
             top: 20px;
@@ -749,9 +778,26 @@
             font-family: Consolas, "Courier New", monospace;
             font-size: 11px;
             line-height: 1.35;
-            white-space: pre-wrap;
             box-shadow: 0 4px 14px rgba(15, 23, 42, .06);
         }
+
+        .receiptPreviewText {
+            margin: 0;
+            font: inherit;
+            white-space: pre-wrap;
+        }
+
+        .receiptPreviewLogo {
+            display: block;
+            width: auto;
+            max-width: 80%;
+            max-height: 120px;
+            margin-inline: auto;
+            object-fit: contain;
+        }
+
+        .receiptPreviewLogoTop { margin-bottom: 12px; }
+        .receiptPreviewLogoBottom { margin-top: 12px; }
 
         @media (max-width: 900px) {
             .appShell { grid-template-columns: 190px minmax(0, 1fr); }

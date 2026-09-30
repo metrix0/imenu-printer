@@ -12,6 +12,9 @@
         'SHOW_SUBITEMS',
         'SHOW_OBSERVATIONS',
         'SHOW_TOTALS',
+        'SHOW_LOGO',
+        'LOGO_PATH',
+        'LOGO_POSITION',
     ]
     const DEFAULTS = {
         TITLE: 'COZINHA',
@@ -25,11 +28,15 @@
         SHOW_SUBITEMS: true,
         SHOW_OBSERVATIONS: true,
         SHOW_TOTALS: true,
+        SHOW_LOGO: false,
+        LOGO_PATH: '',
+        LOGO_POSITION: 'top',
     }
 
     let saveTimer = null
     let activeVia = 1
     let via2Customized = false
+    const logoPreviewByVia = { 1: null, 2: null }
 
     function configKey(via, suffix) {
         return via === 2 ? `RECEIPT_2_${suffix}` : `RECEIPT_${suffix}`
@@ -47,6 +54,55 @@
         return document.getElementById(id)?.value || ''
     }
 
+    function localFileName(filePath) {
+        return String(filePath || '').split(/[\\/]/).pop() || ''
+    }
+
+    function updateLogoControls(via) {
+        const enabled = checked(fieldId(via, 'SHOW_LOGO'))
+        const controls = document.getElementById(fieldId(via, 'LOGO_CONTROLS'))
+        const fileName = document.getElementById(fieldId(via, 'LOGO_FILE_NAME'))
+        const filePath = value(fieldId(via, 'LOGO_PATH')).trim()
+
+        controls?.classList.toggle('hidden', !enabled)
+        if (fileName) {
+            fileName.textContent = filePath
+                ? localFileName(filePath)
+                : 'Nenhuma imagem selecionada'
+        }
+    }
+
+    async function loadLogoPreview(via) {
+        const filePath = value(fieldId(via, 'LOGO_PATH')).trim()
+        if (!filePath) {
+            logoPreviewByVia[via] = null
+            renderPreview()
+            return
+        }
+
+        try {
+            const result = await window.api.getReceiptLogoPreview(filePath)
+            logoPreviewByVia[via] = result?.exists ? result.previewDataUrl : null
+        } catch {
+            logoPreviewByVia[via] = null
+        }
+
+        renderPreview()
+    }
+
+    async function selectLogo(via) {
+        const result = await window.api.selectReceiptLogo()
+        if (!result || result.canceled) return
+
+        const pathField = document.getElementById(fieldId(via, 'LOGO_PATH'))
+        if (pathField) pathField.value = result.path || ''
+        logoPreviewByVia[via] = result.previewDataUrl || null
+
+        if (via === 2) via2Customized = true
+        updateLogoControls(via)
+        scheduleSave()
+    }
+
     function getViaSettings(via) {
         return {
             TITLE: value(fieldId(via, 'TITLE')).trim().slice(0, 24) || (via === 2 ? 'ENTREGA' : 'COZINHA'),
@@ -60,6 +116,9 @@
             SHOW_SUBITEMS: checked(fieldId(via, 'SHOW_SUBITEMS')),
             SHOW_OBSERVATIONS: checked(fieldId(via, 'SHOW_OBSERVATIONS')),
             SHOW_TOTALS: checked(fieldId(via, 'SHOW_TOTALS')),
+            SHOW_LOGO: checked(fieldId(via, 'SHOW_LOGO')),
+            LOGO_PATH: value(fieldId(via, 'LOGO_PATH')).trim(),
+            LOGO_POSITION: value(fieldId(via, 'LOGO_POSITION')) === 'bottom' ? 'bottom' : 'top',
         }
     }
 
@@ -90,14 +149,28 @@
     }
 
     function renderPreview() {
-        const preview = document.getElementById('receiptPreview')
+        const preview = document.getElementById('receiptPreviewText')
         const label = document.getElementById('receiptPreviewLabel')
+        const logoTop = document.getElementById('receiptPreviewLogoTop')
+        const logoBottom = document.getElementById('receiptPreviewLogoBottom')
         if (!preview) return
 
         const settings = getViaSettings(activeVia)
         const lines = []
+        const logoPreview = logoPreviewByVia[activeVia]
+        const showLogo = settings.SHOW_LOGO && Boolean(settings.LOGO_PATH) && Boolean(logoPreview)
+        const logoAtBottom = settings.LOGO_POSITION === 'bottom'
 
         if (label) label.textContent = `Prévia aproximada — Via ${activeVia}`
+
+        if (logoTop) {
+            logoTop.src = showLogo && !logoAtBottom ? logoPreview : ''
+            logoTop.classList.toggle('hidden', !showLogo || logoAtBottom)
+        }
+        if (logoBottom) {
+            logoBottom.src = showLogo && logoAtBottom ? logoPreview : ''
+            logoBottom.classList.toggle('hidden', !showLogo || !logoAtBottom)
+        }
 
         lines.push(settings.TITLE.toUpperCase())
         lines.push('----------------------------------------')
@@ -165,6 +238,31 @@
         `
     }
 
+    function logoControls(via) {
+        return `
+            <div id="${fieldId(via, 'LOGO_CONTROLS')}" class="receiptLogoControls hidden">
+                <input id="${fieldId(via, 'LOGO_PATH')}" type="hidden" />
+                <div class="receiptFieldsGrid">
+                    <div class="field" style="margin-top:0">
+                        <label>Arquivo local</label>
+                        <div class="receiptLogoFileRow">
+                            <button class="ghost" id="${fieldId(via, 'LOGO_SELECT')}" type="button">Selecionar imagem</button>
+                            <span id="${fieldId(via, 'LOGO_FILE_NAME')}" class="receiptLogoFileName">Nenhuma imagem selecionada</span>
+                        </div>
+                        <p class="localOnly">PNG ou JPG. O arquivo fica somente neste computador.</p>
+                    </div>
+                    <div class="field" style="margin-top:0">
+                        <label for="${fieldId(via, 'LOGO_POSITION')}">Posição do logo</label>
+                        <select id="${fieldId(via, 'LOGO_POSITION')}">
+                            <option value="top">No topo</option>
+                            <option value="bottom">No final</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        `
+    }
+
     function viaPanel(via) {
         return `
             <div id="receiptViaPanel${via}" class="${via === 1 ? '' : 'hidden'}">
@@ -189,7 +287,10 @@
                     ${toggle(via, 'SHOW_SUBITEMS', 'Complementos')}
                     ${toggle(via, 'SHOW_OBSERVATIONS', 'Observações')}
                     ${toggle(via, 'SHOW_TOTALS', 'Totais')}
+                    ${toggle(via, 'SHOW_LOGO', 'Logo na comanda')}
                 </div>
+
+                ${logoControls(via)}
             </div>
         `
     }
@@ -222,6 +323,10 @@
             String(resolvedConfigValue(config, via, 'TITLE') || (via === 2 ? 'ENTREGA' : 'COZINHA'))
         document.getElementById(fieldId(via, 'FOOTER_TEXT')).value =
             String(resolvedConfigValue(config, via, 'FOOTER_TEXT') || '')
+        document.getElementById(fieldId(via, 'LOGO_PATH')).value =
+            String(resolvedConfigValue(config, via, 'LOGO_PATH') || '')
+        document.getElementById(fieldId(via, 'LOGO_POSITION')).value =
+            resolvedConfigValue(config, via, 'LOGO_POSITION') === 'bottom' ? 'bottom' : 'top'
 
         for (const suffix of VIA_SUFFIXES) {
             if (typeof DEFAULTS[suffix] !== 'boolean') continue
@@ -246,6 +351,8 @@
             }
         }
 
+        logoPreviewByVia[2] = logoPreviewByVia[1]
+        updateLogoControls(2)
         via2Customized = true
         scheduleSave()
     }
@@ -292,6 +399,10 @@
 
         setViaFields(resetConfig, 1)
         setViaFields(resetConfig, 2)
+        logoPreviewByVia[1] = null
+        logoPreviewByVia[2] = null
+        updateLogoControls(1)
+        updateLogoControls(2)
         via2Customized = true
         renderPreview()
         await window.api.saveConfig(resetConfig)
@@ -320,7 +431,11 @@
 
                 <div class="receiptPreviewWrap">
                     <p id="receiptPreviewLabel" class="receiptPreviewLabel">Prévia aproximada — Via 1</p>
-                    <pre id="receiptPreview" class="receiptPreview"></pre>
+                    <div id="receiptPreview" class="receiptPreview">
+                        <img id="receiptPreviewLogoTop" class="receiptPreviewLogo receiptPreviewLogoTop hidden" alt="" />
+                        <pre id="receiptPreviewText" class="receiptPreviewText"></pre>
+                        <img id="receiptPreviewLogoBottom" class="receiptPreviewLogo receiptPreviewLogoBottom hidden" alt="" />
+                    </div>
                 </div>
             </div>
         `
@@ -332,6 +447,9 @@
 
         setViaFields(config, 1)
         setViaFields(config, 2)
+        updateLogoControls(1)
+        updateLogoControls(2)
+        await Promise.all([loadLogoPreview(1), loadLogoPreview(2)])
 
         for (const via of [1, 2]) {
             document.getElementById(fieldId(via, 'TITLE'))?.addEventListener('input', () => {
@@ -347,9 +465,18 @@
                 if (typeof DEFAULTS[suffix] !== 'boolean') continue
                 document.getElementById(fieldId(via, suffix))?.addEventListener('change', () => {
                     if (via === 2) via2Customized = true
+                    if (suffix === 'SHOW_LOGO') updateLogoControls(via)
                     scheduleSave()
                 })
             }
+
+            document.getElementById(fieldId(via, 'LOGO_POSITION'))?.addEventListener('change', () => {
+                if (via === 2) via2Customized = true
+                scheduleSave()
+            })
+            document.getElementById(fieldId(via, 'LOGO_SELECT'))?.addEventListener('click', () => {
+                selectLogo(via).catch(() => {})
+            })
         }
 
         document.getElementById('receiptViaTab1').addEventListener('click', () => selectVia(1))

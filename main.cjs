@@ -1,5 +1,5 @@
 const WebSocket = require('ws')
-const { app, BrowserWindow, ipcMain, Menu, MenuItem, shell, Tray } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, shell, Tray } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const http = require('http')
@@ -31,6 +31,9 @@ let stopPrinterLoop = false
 let googleLoginInProgress = false
 
 const RECEIPT_WIDTH = 40
+const RECEIPT_LOGO_MAX_WIDTH = 320
+const RECEIPT_LOGO_MAX_HEIGHT = 160
+const RECEIPT_LOGO_THRESHOLD = 180
 const MAX_PRINT_ATTEMPTS = 3
 const FINAL_PRINT_RETRY_DELAY_MS = 30 * 1000
 const PRINT_OPERATION_TIMEOUT_MS = 20 * 1000
@@ -43,6 +46,7 @@ const SUPPORT_WHATSAPP_URL = 'https://wa.me/5519997235394?text=' + encodeURIComp
 let updateCheckInProgress = false
 let pendingUpdate = null
 let updateInstallScheduled = false
+const receiptLogoCache = new Map()
 let updateState = {
     status: 'idle',
     currentVersion: app.getVersion(),
@@ -458,6 +462,9 @@ function readConfig() {
         RECEIPT_SHOW_SUBITEMS: true,
         RECEIPT_SHOW_OBSERVATIONS: true,
         RECEIPT_SHOW_TOTALS: true,
+        RECEIPT_SHOW_LOGO: false,
+        RECEIPT_LOGO_PATH: '',
+        RECEIPT_LOGO_POSITION: 'top',
 
         POLL_EVERY_MS: 7000,
         CONNECT_TIMEOUT_MS: 5000,
@@ -655,19 +662,148 @@ function normalizePrinterText(text) {
         .replace(/ª/g, 'a')
 }
 
-function printRaw(text, config) {
-    const cleanText = normalizePrinterText(text)
+function encodePrinterData(value) {
+    if (Buffer.isBuffer(value)) return value
+    return iconv.encode(normalizePrinterText(value), 'cp850')
+}
+
+function getReceiptLogoSetting(config, via, suffix, fallback) {
+    const primaryKey = `RECEIPT_${suffix}`
+    const viaKey = `RECEIPT_2_${suffix}`
+
+    if (via === 2 && Object.prototype.hasOwnProperty.call(config, viaKey)) {
+        return config[viaKey]
+    }
+
+    if (Object.prototype.hasOwnProperty.call(config, primaryKey)) {
+        return config[primaryKey]
+    }
+
+    return fallback
+}
+
+function normalizeReceiptLogoPosition(value) {
+    return String(value || '').toLowerCase() === 'bottom' ? 'bottom' : 'top'
+}
+
+function loadMonochromeReceiptLogo(imagePath) {
+    const normalizedPath = String(imagePath || '').trim()
+    if (!normalizedPath || !fs.existsSync(normalizedPath)) return null
+
+    const stats = fs.statSync(normalizedPath)
+    const cacheKey = `${normalizedPath}:${stats.mtimeMs}:${stats.size}`
+    const cached = receiptLogoCache.get(normalizedPath)
+    if (cached?.cacheKey === cacheKey) return cached
+
+    const source = nativeImage.createFromPath(normalizedPath)
+    if (source.isEmpty()) return null
+
+    const sourceSize = source.getSize()
+    if (sourceSize.width < 1 || sourceSize.height < 1) return null
+
+    const scale = Math.min(
+        1,
+        RECEIPT_LOGO_MAX_WIDTH / sourceSize.width,
+        RECEIPT_LOGO_MAX_HEIGHT / sourceSize.height
+    )
+    const width = Math.max(1, Math.round(sourceSize.width * scale))
+    const height = Math.max(1, Math.round(sourceSize.height * scale))
+    const resized = source.resize({ width, height, quality: 'best' })
+    const bitmap = Buffer.from(resized.toBitmap())
+
+    for (let index = 0; index < bitmap.length; index += 4) {
+        const alpha = bitmap[index + 3] / 255
+        const blue = bitmap[index] * alpha + 255 * (1 - alpha)
+        const green = bitmap[index + 1] * alpha + 255 * (1 - alpha)
+        const red = bitmap[index + 2] * alpha + 255 * (1 - alpha)
+        const luminance = (red * 0.299) + (green * 0.587) + (blue * 0.114)
+        const value = luminance < RECEIPT_LOGO_THRESHOLD ? 0 : 255
+
+        bitmap[index] = value
+        bitmap[index + 1] = value
+        bitmap[index + 2] = value
+        bitmap[index + 3] = 255
+    }
+
+    const monochromeImage = nativeImage.createFromBitmap(bitmap, { width, height })
+    const processed = {
+        cacheKey,
+        width,
+        height,
+        bitmap,
+        previewDataUrl: monochromeImage.toDataURL(),
+    }
+
+    receiptLogoCache.set(normalizedPath, processed)
+    return processed
+}
+
+function createReceiptLogoRasterBuffer(imagePath) {
+    const processed = loadMonochromeReceiptLogo(imagePath)
+    if (!processed) return null
+
+    const rowBytes = Math.ceil(processed.width / 8)
+    const raster = Buffer.alloc(rowBytes * processed.height)
+
+    for (let y = 0; y < processed.height; y += 1) {
+        for (let x = 0; x < processed.width; x += 1) {
+            const pixelOffset = (y * processed.width + x) * 4
+            if (processed.bitmap[pixelOffset] >= 128) continue
+
+            const byteOffset = y * rowBytes + Math.floor(x / 8)
+            raster[byteOffset] |= 0x80 >> (x % 8)
+        }
+    }
+
+    const header = Buffer.from([
+        0x1d, 0x76, 0x30, 0x00,
+        rowBytes & 0xff,
+        (rowBytes >> 8) & 0xff,
+        processed.height & 0xff,
+        (processed.height >> 8) & 0xff,
+    ])
+
+    return Buffer.concat([
+        encodePrinterData(ESC.alignCenter),
+        header,
+        raster,
+        Buffer.from('\n'),
+        encodePrinterData(ESC.alignLeft),
+    ])
+}
+
+function createReceiptLogoBuffer(config, via) {
+    const enabled = getReceiptLogoSetting(config, via, 'SHOW_LOGO', false) === true
+    if (!enabled) return null
+
+    const imagePath = String(getReceiptLogoSetting(config, via, 'LOGO_PATH', '') || '').trim()
+    if (!imagePath) return null
+
+    return createReceiptLogoRasterBuffer(imagePath)
+}
+
+function getReceiptLogoPreviewPayload(imagePath) {
+    const processed = loadMonochromeReceiptLogo(imagePath)
+    return {
+        exists: Boolean(processed),
+        fileName: path.basename(String(imagePath || '')),
+        previewDataUrl: processed?.previewDataUrl || null,
+    }
+}
+
+function printRaw(output, config) {
+    const bytes = encodePrinterData(output)
     const mode = String(config.PRINTER_MODE || 'ethernet').toLowerCase()
 
     if (mode === 'usb') {
-        return printUsb(cleanText, config)
+        return printUsb(bytes, config)
     }
 
     if (mode === 'bluetooth') {
-        return printBluetooth(cleanText, config)
+        return printBluetooth(bytes, config)
     }
 
-    return printEthernet(cleanText, config)
+    return printEthernet(bytes, config)
 }
 
 function getPrintCopies(config) {
@@ -696,14 +832,13 @@ async function printConfiguredCopies(receipts, config) {
     }
 }
 
-function printUsb(text, config) {
+function printUsb(bytes, config) {
     return new Promise((resolve, reject) => {
         if (!config.PRINTER_NAME) {
             reject(new Error('Missing PRINTER_NAME'))
             return
         }
 
-        const bytes = iconv.encode(text, 'cp850')
         const filePath = path.join(os.tmpdir(), `imenu_raw_print_${Date.now()}.bin`)
         fs.writeFileSync(filePath, bytes)
 
@@ -824,7 +959,7 @@ if (-not $ok) {
     })
 }
 
-function printEthernet(text, config) {
+function printEthernet(bytes, config) {
     return new Promise((resolve, reject) => {
         if (!config.PRINTER_IP) {
             reject(createOperationError('Missing PRINTER_IP'))
@@ -881,7 +1016,7 @@ function printEthernet(text, config) {
             if (settled) return
 
             writeStarted = true
-            socket.write(iconv.encode(text, 'cp850'), error => {
+            socket.write(bytes, error => {
                 if (settled) return
 
                 if (error) {
@@ -895,7 +1030,7 @@ function printEthernet(text, config) {
     })
 }
 
-function printBluetooth(text, config) {
+function printBluetooth(bytes, config) {
     return new Promise((resolve, reject) => {
         if (!config.PRINTER_COM_PORT) {
             reject(createOperationError('Missing PRINTER_COM_PORT'))
@@ -963,7 +1098,7 @@ function printBluetooth(text, config) {
             }
 
             writeStarted = true
-            port.write(iconv.encode(text, 'cp850'), error => {
+            port.write(bytes, error => {
                 if (settled) {
                     closePort()
                     return
@@ -1488,10 +1623,31 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
         text += ESC.alignLeft
     }
 
-    text += '\n\n\n'
-    text += ESC.cut
+    const ending = '\n\n\n' + ESC.cut
+    const logoBuffer = createReceiptLogoBuffer(receiptConfig, via)
 
-    return text
+    if (!logoBuffer) {
+        return text + ending
+    }
+
+    const logoPosition = normalizeReceiptLogoPosition(
+        getReceiptLogoSetting(receiptConfig, via, 'LOGO_POSITION', 'top')
+    )
+
+    if (logoPosition === 'bottom') {
+        return Buffer.concat([
+            encodePrinterData(text + '\n'),
+            logoBuffer,
+            encodePrinterData(ending),
+        ])
+    }
+
+    const start = printerStart()
+    return Buffer.concat([
+        encodePrinterData(start),
+        logoBuffer,
+        encodePrinterData(text.slice(start.length) + ending),
+    ])
 }
 
 async function buildConfiguredReceipts(supabase, orderId, config) {
@@ -1989,6 +2145,37 @@ app.on('will-quit', () => {
 
 ipcMain.handle('config:get', () => {
     return readConfig()
+})
+
+ipcMain.handle('receipt-logo:select', async () => {
+    const result = await dialog.showOpenDialog(win, {
+        title: 'Selecionar logo da comanda',
+        properties: ['openFile'],
+        filters: [
+            { name: 'Imagens', extensions: ['png', 'jpg', 'jpeg'] },
+        ],
+    })
+
+    if (result.canceled || !result.filePaths[0]) {
+        return { canceled: true }
+    }
+
+    const selectedPath = result.filePaths[0]
+    const preview = getReceiptLogoPreviewPayload(selectedPath)
+    if (!preview.exists) {
+        throw new Error('Não foi possível abrir esta imagem.')
+    }
+
+    return {
+        canceled: false,
+        path: selectedPath,
+        fileName: preview.fileName,
+        previewDataUrl: preview.previewDataUrl,
+    }
+})
+
+ipcMain.handle('receipt-logo:preview', (_, imagePath) => {
+    return getReceiptLogoPreviewPayload(imagePath)
 })
 
 ipcMain.handle('update:get-status', () => {

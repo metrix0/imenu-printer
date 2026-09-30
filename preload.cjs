@@ -3,6 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('api', {
     getConfig: () => ipcRenderer.invoke('config:get'),
     saveConfig: config => ipcRenderer.invoke('config:save', config),
+    selectReceiptLogo: () => ipcRenderer.invoke('receipt-logo:select'),
+    getReceiptLogoPreview: imagePath => ipcRenderer.invoke('receipt-logo:preview', imagePath),
     detectPrinters: () => ipcRenderer.invoke('printers:detect'),
     testPrinter: config => ipcRenderer.invoke('printer:test', config),
     getPrintHistory: () => ipcRenderer.invoke('orders:history'),
