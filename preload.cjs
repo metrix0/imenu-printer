@@ -2,6 +2,10 @@ const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('api', {
     getConfig: () => ipcRenderer.invoke('config:get'),
+    isAuthenticated: () => ipcRenderer.invoke('auth:status'),
+    onAuthRequired: callback => {
+        ipcRenderer.on('auth:required', () => callback())
+    },
     saveConfig: config => ipcRenderer.invoke('config:save', config),
     selectReceiptLogo: () => ipcRenderer.invoke('receipt-logo:select'),
     getReceiptLogoPreview: imagePath => ipcRenderer.invoke('receipt-logo:preview', imagePath),

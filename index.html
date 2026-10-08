@@ -1330,7 +1330,7 @@
 
         config.PRINTER_BAUD_RATE = 9600
         config.PRINTER_PORT = Number(config.PRINTER_PORT || 9100)
-        config.POLL_EVERY_MS = 7000
+        config.POLL_EVERY_MS = 60000
         config.CONNECT_TIMEOUT_MS = 5000
 
         return config
@@ -1508,20 +1508,31 @@
         showLogin()
     }
 
-    window.api.onLog(log)
+    window.api.onLog(message => {
+        log(message)
+        if (/^(Impresso:|Reimpresso |Pedido .* falhou|Fila recuperada:)/.test(String(message))) {
+            loadPrintHistory()
+        }
+    })
+    window.api.onAuthRequired(() => {
+        showLogin()
+        document.getElementById('loginStatus').textContent =
+            'Faça login novamente para continuar imprimindo.'
+    })
     window.api.onUpdateStatus(updateUpdateStatus)
-    window.setInterval(loadPrintHistory, 5000)
+    window.setInterval(loadPrintHistory, 60000)
 
     async function init() {
-        const [config, updater] = await Promise.all([
+        const [config, updater, authenticated] = await Promise.all([
             window.api.getConfig(),
             window.api.getUpdateStatus(),
+            window.api.isAuthenticated(),
         ])
         updateUpdateStatus(updater)
 
         setFormConfig(config)
 
-        if (config.RESTAURANT_ID) {
+        if (config.RESTAURANT_ID && authenticated) {
             showApp(config)
             await detectPrinters()
         } else {

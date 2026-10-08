@@ -1,5 +1,5 @@
 const WebSocket = require('ws')
-const { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, shell, Tray } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, MenuItem, nativeImage, shell, Tray, safeStorage } = require('electron')
 const path = require('path')
 const fs = require('fs')
 const http = require('http')
@@ -16,7 +16,8 @@ const configPath = path.join(baseDir, 'config.json')
 
 const SUPABASE_URL = 'https://mjogdsnxbwhbqcoijrwt.supabase.co'
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qb2dkc254YndoYnFjb2lqcnd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE2NjY4MzUsImV4cCI6MjA3NzI0MjgzNX0.S1XLgP7U9ugTXKh4YTrEvzDaroVMN0LhxWc8B3DnkII"
-const SUPABASE_SERVICE_ROLE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qb2dkc254YndoYnFjb2lqcnd0Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MTY2NjgzNSwiZXhwIjoyMDc3MjQyODM1fQ.VlAozKcfxZvFi-DnQTsWkWvYbEkzFVyGt7S6yy6c5I0"
+const PRINT_API_URL = process.env.IMENU_PRINTER_API_URL || 'https://imenuapp.com.br/api/printer'
+const authSessionPath = path.join(baseDir, 'auth-session.json')
 const GOOGLE_AUTH_CALLBACK_HOST = '127.0.0.1'
 const GOOGLE_AUTH_CALLBACK_PORT = 47819
 const GOOGLE_AUTH_CALLBACK_PATH = '/auth/callback'
@@ -28,6 +29,10 @@ let tray = null
 let forceQuit = false
 let printerLoopRunning = false
 let stopPrinterLoop = false
+let printerWakeResolve = null
+let printerWakePending = false
+let queueChannel = null
+let authClient = null
 let googleLoginInProgress = false
 
 const RECEIPT_WIDTH = 40
@@ -466,7 +471,7 @@ function readConfig() {
         RECEIPT_LOGO_PATH: '',
         RECEIPT_LOGO_POSITION: 'top',
 
-        POLL_EVERY_MS: 7000,
+        POLL_EVERY_MS: 60000,
         CONNECT_TIMEOUT_MS: 5000,
     }
 
@@ -490,21 +495,149 @@ function saveConfig(config) {
     fs.writeFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+const authStorage = {
+    getItem(key) {
+        try {
+            const stored = JSON.parse(fs.readFileSync(authSessionPath, 'utf8'))
+            if (stored.key !== key) return null
+            if (stored.encrypted) {
+                return safeStorage.decryptString(Buffer.from(stored.value, 'base64'))
+            }
+            return stored.value || null
+        } catch {
+            return null
+        }
+    },
+    setItem(key, value) {
+        fs.mkdirSync(baseDir, { recursive: true })
+        const encrypted = safeStorage.isEncryptionAvailable()
+        const stored = {
+            key,
+            encrypted,
+            value: encrypted
+                ? safeStorage.encryptString(value).toString('base64')
+                : value,
+        }
+        fs.writeFileSync(authSessionPath, JSON.stringify(stored), { mode: 0o600 })
+    },
+    removeItem(key) {
+        try {
+            if (fs.existsSync(authSessionPath)) fs.unlinkSync(authSessionPath)
+        } catch {}
+    },
+}
+
 function getSupabase(useServiceRole = false, authOptions = null) {
-    const key = useServiceRole
-        ? SUPABASE_SERVICE_ROLE_KEY
-        : SUPABASE_ANON_KEY
-    const options = {
-        realtime: {
-            transport: WebSocket,
+    if (useServiceRole) {
+        throw new Error('O acesso privilegiado não está disponível neste aplicativo.')
+    }
+    if (!authOptions && authClient) return authClient
+
+    const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+            storage: authStorage,
+            persistSession: true,
+            autoRefreshToken: true,
+            detectSessionInUrl: false,
+            ...(authOptions || {}),
         },
+        realtime: { transport: WebSocket },
+    })
+
+    if (!authOptions) authClient = client
+    return client
+}
+
+async function isAuthenticated() {
+    const { data: { user }, error } = await getSupabase().auth.getUser()
+    return !error && Boolean(user)
+}
+
+function requireNewLogin() {
+    stopLoop()
+    if (win && !win.isDestroyed()) {
+        win.webContents.send('auth:required')
+    }
+}
+
+async function printerApi(action, payload = {}) {
+    const { data: { session }, error } = await getSupabase().auth.getSession()
+    if (error || !session?.access_token) {
+        requireNewLogin()
+        throw new Error('Sessão expirada. Faça login novamente.')
     }
 
-    if (authOptions) {
-        options.auth = authOptions
-    }
+    const url = new URL(PRINT_API_URL)
+    const body = JSON.stringify({
+        action,
+        restaurant_id: readConfig().RESTAURANT_ID,
+        ...payload,
+    })
 
-    return createClient(SUPABASE_URL, key, options)
+    return await new Promise((resolve, reject) => {
+        const request = https.request(url, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${session.access_token}`,
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(body),
+            },
+        }, response => {
+            let text = ''
+            response.setEncoding('utf8')
+            response.on('data', chunk => { text += chunk })
+            response.on('end', () => {
+                let data
+                try {
+                    data = JSON.parse(text)
+                } catch {
+                    reject(new Error('Resposta inválida do servidor de impressão.'))
+                    return
+                }
+
+                if (response.statusCode === 401 || response.statusCode === 403) {
+                    requireNewLogin()
+                }
+                if (response.statusCode < 200 || response.statusCode >= 300) {
+                    reject(new Error(data.error || `Falha no servidor (HTTP ${response.statusCode}).`))
+                    return
+                }
+                resolve(data)
+            })
+        })
+        request.setTimeout(15000, () => request.destroy(new Error('Tempo limite de conexão com o servidor de impressão.')))
+        request.on('error', reject)
+        request.end(body)
+    })
+}
+
+function wakePrinter() {
+    printerWakePending = true
+    if (printerWakeResolve) {
+        const wake = printerWakeResolve
+        printerWakeResolve = null
+        wake()
+    }
+}
+
+async function waitForPrinterWake(timeoutMs) {
+    if (printerWakePending) {
+        printerWakePending = false
+        return
+    }
+    await new Promise(resolve => {
+        let timeout
+        const wake = () => {
+            clearTimeout(timeout)
+            resolve()
+        }
+        printerWakeResolve = wake
+        timeout = setTimeout(() => {
+            if (printerWakeResolve === wake) printerWakeResolve = null
+            resolve()
+        }, timeoutMs)
+    })
+    printerWakePending = false
 }
 
 function createMemoryAuthStorage() {
@@ -1128,187 +1261,64 @@ function printBluetooth(bytes, config) {
 }
 
 async function getNextJob(supabase, config) {
-    const { data, error } = await supabase
-        .from('print_jobs')
-        .select('*')
-        .eq('restaurant_id', config.RESTAURANT_ID)
-        .eq('status', 'queued')
-        .order('created_at', { ascending: true })
-        .limit(1)
-
-    if (error) throw error
-    return data?.[0] || null
+    const response = await printerApi('next_job')
+    return response.job || null
 }
 
 async function claimJob(supabase, id, attempt) {
-    const { data, error } = await supabase
-        .from('print_jobs')
-        .update({
-            status: 'printing',
-            attempts: attempt,
-            last_error: null,
-        })
-        .eq('id', id)
-        .eq('status', 'queued')
-        .select('id')
-
-    if (error) throw error
-    return Boolean(data?.length)
+    const response = await printerApi('claim_job', { job_id: id, attempt })
+    return response.claimed === true
 }
 
 async function updateQueuedJobFailure(supabase, id, attempt, patch) {
-    const { error } = await supabase
-        .from('print_jobs')
-        .update({
-            attempts: attempt,
-            ...patch,
-        })
-        .eq('id', id)
-        .eq('status', 'queued')
-
-    if (error) throw error
+    await printerApi('queued_failure', {
+        job_id: id,
+        attempt,
+        status: patch.status,
+        last_error: patch.last_error,
+    })
 }
 
 async function updateJob(supabase, id, patch) {
-    const { error } = await supabase
-        .from('print_jobs')
-        .update(patch)
-        .eq('id', id)
-
-    if (error) throw error
+    await printerApi('update_job', {
+        job_id: id,
+        status: patch.status,
+        last_error: patch.last_error,
+    })
 }
 
 async function recoverInterruptedJobs(supabase, config) {
-    const { data, error } = await supabase
-        .from('print_jobs')
-        .update({
-            status: 'failed',
-            last_error: 'Impressão interrompida antes de ser concluída.',
-        })
-        .eq('restaurant_id', config.RESTAURANT_ID)
-        .eq('status', 'printing')
-        .select('id')
-
-    if (error) throw error
-
-    if (data?.length) {
-        sendLog(`Fila recuperada: ${data.length} pedido(s) interrompido(s) liberado(s).`)
+    const response = await printerApi('recover')
+    if (response.recovered) {
+        sendLog(`Fila recuperada: ${response.recovered} pedido(s) interrompido(s) liberado(s).`)
     }
 }
 
 async function getRecentPrintHistory(limit = 15) {
-    const config = readConfig()
-
-    if (!config.RESTAURANT_ID) {
-        return []
-    }
-
-    const supabase = getSupabase(true)
-    const { data: jobs, error: jobsError } = await supabase
-        .from('print_jobs')
-        .select('id, order_id, status, created_at, printed_at')
-        .eq('restaurant_id', config.RESTAURANT_ID)
-        .in('status', ['queued', 'printing', 'printed', 'failed'])
-        .order('created_at', { ascending: false })
-        .limit(Math.max(limit * 3, limit))
-
-    if (jobsError) throw jobsError
-
-    const latestByOrder = []
-    const seenOrderIds = new Set()
-
-    for (const job of jobs || []) {
-        if (!job.order_id || seenOrderIds.has(job.order_id)) continue
-
-        seenOrderIds.add(job.order_id)
-        latestByOrder.push(job)
-
-        if (latestByOrder.length >= limit) break
-    }
-
-    const orderIds = latestByOrder.map(job => job.order_id)
-    if (orderIds.length === 0) return []
-
-    const { data: orders, error: ordersError } = await supabase
-        .from('orders')
-        .select('id, display_id, customer_name')
-        .in('id', orderIds)
-
-    if (ordersError) throw ordersError
-
-    const orderById = new Map((orders || []).map(order => [order.id, order]))
-
-    return latestByOrder.map(job => {
-        const order = orderById.get(job.order_id)
-
-        return {
-            order_id: job.order_id,
-            display_id: order?.display_id ?? null,
-            customer_name: order?.customer_name || '',
-            status: job.status,
-            status_at: job.printed_at || job.created_at || null,
-        }
-    })
+    if (!readConfig().RESTAURANT_ID) return []
+    const response = await printerApi('history', { limit })
+    return response.history || []
 }
 
 async function reprintOrder(orderId) {
     const config = readConfig()
-
     if (!config.RESTAURANT_ID) {
         throw new Error('Faça login antes de reimprimir um pedido.')
     }
-
     if (!orderId) {
         throw new Error('Pedido inválido.')
     }
 
-    const supabase = getSupabase(true)
-
-    const { data: matchingJobs, error: matchingJobError } = await supabase
-        .from('print_jobs')
-        .select('id')
-        .eq('restaurant_id', config.RESTAURANT_ID)
-        .eq('order_id', orderId)
-        .eq('status', 'printed')
-        .limit(1)
-
-    if (matchingJobError) throw matchingJobError
-
-    if (!matchingJobs?.length) {
-        throw new Error('Pedido não encontrado no histórico deste restaurante.')
-    }
-
-    const { data: activeJobs, error: activeJobsError } = await supabase
-        .from('print_jobs')
-        .select('id')
-        .eq('restaurant_id', config.RESTAURANT_ID)
-        .in('status', ['queued', 'printing'])
-        .limit(1)
-
-    if (activeJobsError) throw activeJobsError
-
-    if (activeJobs?.length) {
-        throw new Error('Aguarde os pedidos pendentes terminarem de imprimir.')
-    }
-
-    const { data: order, error: orderError } = await supabase
-        .from('orders')
-        .select('display_id')
-        .eq('id', orderId)
-        .single()
-
-    if (orderError) throw orderError
-
-    const displayId = order?.display_id || String(orderId).slice(0, 8)
+    const order = await printerApi('reprint_check', { order_id: orderId })
+    const displayId = order.display_id || String(orderId).slice(0, 8)
     const copies = getPrintCopies(config)
 
     sendLog(`Reimprimindo pedido #${displayId}${copies === 2 ? ' (2 vias)' : ''}`)
 
-    const receipts = await buildConfiguredReceipts(supabase, orderId, config)
+    const receipts = await buildConfiguredReceipts(null, orderId, config)
     await printConfiguredCopies(receipts, config)
 
     sendLog(`Reimpresso pedido #${displayId}${copies === 2 ? ' (2 vias)' : ''}`)
-
     return { ok: true }
 }
 
@@ -1386,7 +1396,7 @@ function paymentLabel(method) {
     return paymentMap[method] ?? method
 }
 
-async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via = 1) {
+async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via = 1, receiptData = null) {
     const receiptSetting = (suffix, fallback) => {
         const primaryKey = `RECEIPT_${suffix}`
         const viaKey = `RECEIPT_2_${suffix}`
@@ -1425,60 +1435,7 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
     const showObservations = receiptSetting('SHOW_OBSERVATIONS', true) !== false
     const showTotals = receiptSetting('SHOW_TOTALS', true) !== false
 
-    const { data: order, error: orderErr } = await supabase
-        .from('orders')
-        .select(`
-          id,
-          display_id,
-          created_at,
-          scheduled_for,
-          customer_name,
-          customer_phone,
-          customer_address,
-          payment_method,
-          is_delivery,
-          table_name_snapshot,
-          subtotal_cents,
-          delivery_cents,
-          coupon_discount_cents,
-          total_cents
-        `)
-        .eq('id', orderId)
-        .single()
-
-    if (orderErr) throw orderErr
-
-    const { data: items, error: itemsErr } = await supabase
-        .from('order_items')
-        .select(`
-          id,
-          name,
-          quantity,
-          observation,
-          price_cents,
-          total_cents
-        `)
-        .eq('order_id', orderId)
-
-    if (itemsErr) throw itemsErr
-
-    const itemIds = items?.map(item => item.id) || []
-    let subitems = []
-
-    if (itemIds.length > 0) {
-        const { data: subitemsData, error: subitemsErr } = await supabase
-            .from('order_item_subitems')
-            .select(`
-              order_item_id,
-              name,
-              quantity,
-              price_cents
-            `)
-            .in('order_item_id', itemIds)
-
-        if (subitemsErr) throw subitemsErr
-        subitems = subitemsData || []
-    }
+    const { order, items, subitems } = receiptData || await printerApi('receipt', { order_id: orderId })
 
     const subitemsByOrderItem = {}
 
@@ -1651,13 +1608,14 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
 }
 
 async function buildConfiguredReceipts(supabase, orderId, config) {
-    const firstReceipt = await buildReceipt(supabase, orderId, config, 1)
+    const receiptData = await printerApi('receipt', { order_id: orderId })
+    const firstReceipt = await buildReceipt(null, orderId, config, 1, receiptData)
 
     if (getPrintCopies(config) !== 2) {
         return [firstReceipt]
     }
 
-    const secondReceipt = await buildReceipt(supabase, orderId, config, 2)
+    const secondReceipt = await buildReceipt(null, orderId, config, 2, receiptData)
     return [firstReceipt, secondReceipt]
 }
 
@@ -1673,10 +1631,16 @@ async function startPrinterLoop() {
         return
     }
 
+    const supabase = getSupabase()
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+        sendLog('Faça login novamente para conectar a impressora.')
+        requireNewLogin()
+        return
+    }
+
     printerLoopRunning = true
     stopPrinterLoop = false
-
-    const supabase = getSupabase(true)
 
     sendLog('Impressora ativa.')
     sendLog(`Modo: ${config.PRINTER_MODE}`)
@@ -1687,6 +1651,18 @@ async function startPrinterLoop() {
     } catch (err) {
         sendLog(`Erro ao recuperar fila: ${err.message}`)
     }
+
+    queueChannel = supabase
+        .channel(`printer-queue-${config.RESTAURANT_ID}`)
+        .on('postgres_changes', {
+            event: '*',
+            schema: 'public',
+            table: 'printer_queue_signals',
+            filter: `restaurant_id=eq.${config.RESTAURANT_ID}`,
+        }, () => wakePrinter())
+        .subscribe(status => {
+            if (status === 'SUBSCRIBED') wakePrinter()
+        })
 
     while (!stopPrinterLoop) {
         let job = null
@@ -1796,15 +1772,23 @@ async function startPrinterLoop() {
             sendLog(`Erro: ${err.message}`)
         }
 
-        const latestConfig = readConfig()
-        await sleep(retryDelayMs ?? Number(latestConfig.POLL_EVERY_MS || 7000))
+        await waitForPrinterWake(retryDelayMs ?? 60000)
     }
 
+    if (queueChannel) {
+        await supabase.removeChannel(queueChannel)
+        queueChannel = null
+    }
     printerLoopRunning = false
 }
 
 function stopLoop() {
     stopPrinterLoop = true
+    wakePrinter()
+    if (queueChannel) {
+        getSupabase().removeChannel(queueChannel).catch(() => {})
+        queueChannel = null
+    }
 }
 
 async function testPrint(config) {
@@ -1995,6 +1979,12 @@ async function loginWithGoogleAndGetRestaurant() {
             throw new Error('Não foi possível recuperar o usuário do Google.')
         }
 
+        const { error: persistedSessionError } = await getSupabase().auth.setSession({
+            access_token: sessionData.session.access_token,
+            refresh_token: sessionData.session.refresh_token,
+        })
+        if (persistedSessionError) throw persistedSessionError
+
         const result = await saveRestaurantForUser(
             supabase,
             sessionData.user,
@@ -2117,10 +2107,16 @@ function createWindow() {
         const config = readConfig()
 
         if (config.RESTAURANT_ID) {
-            startPrinterLoop().catch(err => {
-                printerLoopRunning = false
-                sendLog(`Fatal: ${err.message}`)
-            })
+            isAuthenticated().then(authenticated => {
+                if (!authenticated) {
+                    requireNewLogin()
+                    return
+                }
+                startPrinterLoop().catch(err => {
+                    printerLoopRunning = false
+                    sendLog(`Fatal: ${err.message}`)
+                })
+            }).catch(err => sendLog(`Erro de autenticação: ${err.message}`))
         }
     })
 }
@@ -2145,6 +2141,10 @@ app.on('will-quit', () => {
 
 ipcMain.handle('config:get', () => {
     return readConfig()
+})
+
+ipcMain.handle('auth:status', async () => {
+    return await isAuthenticated()
 })
 
 ipcMain.handle('receipt-logo:select', async () => {
@@ -2265,6 +2265,8 @@ ipcMain.handle('auth:google', async () => {
 })
 
 ipcMain.handle('auth:logout', async () => {
+    stopLoop()
+    await getSupabase().auth.signOut()
     const currentConfig = readConfig()
 
     saveConfig({
