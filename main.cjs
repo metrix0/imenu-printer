@@ -16,7 +16,7 @@ const configPath = path.join(baseDir, 'config.json')
 
 const SUPABASE_URL = 'https://mjogdsnxbwhbqcoijrwt.supabase.co'
 const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qb2dkc254YndoYnFjb2lqcnd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE2NjY4MzUsImV4cCI6MjA3NzI0MjgzNX0.S1XLgP7U9ugTXKh4YTrEvzDaroVMN0LhxWc8B3DnkII"
-const PRINT_API_URL = process.env.IMENU_PRINTER_API_URL || 'https://imenuapp.com.br/api/printer'
+const PRINT_API_URL = process.env.IMENU_PRINTER_API_URL || 'https://www.imenuapp.com.br/api/printer'
 const authSessionPath = path.join(baseDir, 'auth-session.json')
 const GOOGLE_AUTH_CALLBACK_HOST = '127.0.0.1'
 const GOOGLE_AUTH_CALLBACK_PORT = 47819
