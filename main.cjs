@@ -1772,7 +1772,15 @@ async function startPrinterLoop() {
             sendLog(`Erro: ${err.message}`)
         }
 
-        await waitForPrinterWake(retryDelayMs ?? 60000)
+        if (retryDelayMs !== null) {
+            // Preserve the existing delayed final retry even if Realtime signals.
+            await sleep(retryDelayMs)
+        } else if (job && !stopPrinterLoop) {
+            // Drain an existing backlog immediately; 60s polling is only for idle printers.
+            await sleep(1000)
+        } else {
+            await waitForPrinterWake(60000)
+        }
     }
 
     if (queueChannel) {
