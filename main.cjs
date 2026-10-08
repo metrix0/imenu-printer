@@ -2130,6 +2130,14 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+    if (process.platform === 'win32' && app.isPackaged) {
+        try {
+            app.setLoginItemSettings({ openAtLogin: true, path: process.execPath })
+        } catch (error) {
+            sendLog(`Não foi possível ativar a inicialização com o Windows: ${error.message}`)
+        }
+    }
+
     await createTray()
     createWindow()
     addVersionToHelpMenu()
