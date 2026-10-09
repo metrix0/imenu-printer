@@ -1,5 +1,10 @@
 (() => {
     const SAVE_DELAY_MS = 350
+    const DEFAULT_PAPER_WIDTH = '58'
+    const PAPER_COLUMNS = {
+        '58': 32,
+        '80': 48,
+    }
     const VIA_SUFFIXES = [
         'TITLE',
         'FOOTER_TEXT',
@@ -34,7 +39,7 @@
         SHOW_SUBITEMS: true,
         SHOW_OBSERVATIONS: true,
         SHOW_TOTALS: true,
-        TEXT_SIZE: 'large',
+        TEXT_SIZE: 'normal',
         ORDER_SIZE: 'extra',
         ITEM_SIZE: 'large',
         TOTAL_SIZE: 'extra',
@@ -69,6 +74,18 @@
     function normalizedChoice(id, allowed, fallback) {
         const candidate = value(id).trim().toLowerCase()
         return allowed.includes(candidate) ? candidate : fallback
+    }
+
+    function getPaperWidth() {
+        return normalizedChoice(
+            'RECEIPT_PAPER_WIDTH',
+            ['58', '80'],
+            DEFAULT_PAPER_WIDTH
+        )
+    }
+
+    function paperColumns() {
+        return PAPER_COLUMNS[getPaperWidth()]
     }
 
     function localFileName(filePath) {
@@ -138,7 +155,7 @@
             TEXT_SIZE: normalizedChoice(
                 fieldId(via, 'TEXT_SIZE'),
                 ['normal', 'large'],
-                'large'
+                'normal'
             ),
             ORDER_SIZE: normalizedChoice(
                 fieldId(via, 'ORDER_SIZE'),
@@ -172,7 +189,9 @@
     }
 
     function getSettings() {
-        const settings = {}
+        const settings = {
+            RECEIPT_PAPER_WIDTH: getPaperWidth(),
+        }
         const via1Settings = getViaSettings(1)
 
         for (const suffix of VIA_SUFFIXES) {
@@ -218,8 +237,8 @@
         return ''
     }
 
-    function previewRowWidth(size) {
-        return size === 'extra' ? 20 : 40
+    function previewRowWidth(size, width = paperColumns()) {
+        return size === 'extra' ? Math.floor(width / 2) : width
     }
 
     function renderPreview() {
@@ -230,13 +249,18 @@
         if (!preview) return
 
         const settings = getViaSettings(activeVia)
+        const selectedPaperWidth = getPaperWidth()
+        const selectedPaperColumns = paperColumns()
         const logoPreview = logoPreviewByVia[activeVia]
         const showLogo = settings.SHOW_LOGO && Boolean(settings.LOGO_PATH) && Boolean(logoPreview)
         const logoAtBottom = settings.LOGO_POSITION === 'bottom'
         const logoWidths = { small: '42%', medium: '62%', large: '80%' }
         const logoMaxHeights = { small: '70px', medium: '95px', large: '120px' }
 
-        if (label) label.textContent = `Prévia aproximada — Via ${activeVia}`
+        if (label) {
+            label.textContent =
+                `Prévia aproximada — Via ${activeVia} · ${selectedPaperWidth} mm`
+        }
 
         for (const [element, visible] of [
             [logoTop, showLogo && !logoAtBottom],
@@ -272,57 +296,117 @@
             separatorLine()
             gap()
         }
-        line('PEDIDO #42', `receiptPreviewBold ${orderClass}`)
-        if (settings.SHOW_ORDER_TIME) line('Hora: 26/09/2026 12:30:00', textClass)
-        if (settings.SHOW_CUSTOMER_NAME) line('Cliente: Maria', textClass)
-        if (settings.SHOW_CUSTOMER_PHONE) line('Telefone: (11) 99999-9999', textClass)
+
+        line('PEDIDO #42', `receiptPreviewBold receiptPreviewCenter ${orderClass}`)
+
+        if (settings.SHOW_CUSTOMER_NAME) {
+            line('Maria', 'receiptPreviewBold receiptPreviewSizeLarge')
+        }
+        if (settings.SHOW_CUSTOMER_PHONE) {
+            line('(11) 99999-9999', textClass)
+        }
         if (settings.SHOW_ADDRESS) {
-            line('Endereco:', textClass)
             line('Rua Exemplo, 123 - Centro', textClass)
         }
-        if (settings.SHOW_PAYMENT) line('Pagamento: Pix (pago online)', textClass)
+
+        gap()
+        line('2 itens (Qtd.: 3)', 'receiptPreviewBold receiptPreviewSizeLarge')
         separatorLine()
         gap()
+
         line(
             settings.SHOW_ITEM_PRICES
                 ? receiptRow(
                     '2x X-Burger',
                     'R$ 38,00',
-                    previewRowWidth(settings.ITEM_SIZE)
+                    previewRowWidth(settings.ITEM_SIZE, selectedPaperColumns)
                 )
                 : '2x X-Burger',
             `receiptPreviewBold ${itemClass}`
         )
+
         if (settings.SHOW_SUBITEMS) {
             line(
                 settings.SHOW_ITEM_PRICES
-                    ? receiptRow('  - 1x Bacon', '+R$ 3,00')
-                    : '  - 1x Bacon',
+                    ? receiptRow(
+                        '   1x Bacon',
+                        '+R$ 3,00',
+                        previewRowWidth(settings.TEXT_SIZE, selectedPaperColumns)
+                    )
+                    : '   1x Bacon',
                 textClass
             )
         }
+
         if (settings.SHOW_OBSERVATIONS) {
-            line('  OBS: Sem cebola', `receiptPreviewBold ${textClass}`)
+            line('   OBS: Sem cebola', `receiptPreviewBold ${textClass}`)
         }
+
         separatorLine()
         gap()
+
         if (settings.SHOW_TOTALS) {
-            line(receiptRow('Subtotal', 'R$ 41,00'), textClass)
-            line(receiptRow('Entrega', 'R$ 5,00'), textClass)
+            line(
+                receiptRow(
+                    'Subtotal',
+                    'R$ 41,00',
+                    previewRowWidth(settings.TEXT_SIZE, selectedPaperColumns)
+                ),
+                textClass
+            )
+            line(
+                receiptRow(
+                    'Entrega',
+                    'R$ 5,00',
+                    previewRowWidth(settings.TEXT_SIZE, selectedPaperColumns)
+                ),
+                textClass
+            )
             separatorLine()
             gap()
+
+            const totalText = 'R$ 46,00'
+            const requestedTotalWidth = previewRowWidth(
+                settings.TOTAL_SIZE,
+                selectedPaperColumns
+            )
+            const resolvedTotalSize =
+                'TOTAL'.length + totalText.length + 1 > requestedTotalWidth
+                    ? 'large'
+                    : settings.TOTAL_SIZE
+
             line(
                 receiptRow(
                     'TOTAL',
-                    'R$ 46,00',
-                    previewRowWidth(settings.TOTAL_SIZE)
+                    totalText,
+                    previewRowWidth(resolvedTotalSize, selectedPaperColumns)
                 ),
-                `receiptPreviewBold ${totalClass}`
+                `receiptPreviewBold ${previewSizeClass(resolvedTotalSize)}`
             )
         }
-        if (settings.FOOTER_TEXT) {
+
+        if (settings.SHOW_PAYMENT) {
+            line(
+                receiptRow(
+                    'Pix',
+                    'R$ 46,00',
+                    previewRowWidth(settings.TEXT_SIZE, selectedPaperColumns)
+                ),
+                textClass
+            )
+        }
+
+        if (settings.FOOTER_TEXT || settings.SHOW_ORDER_TIME) {
             gap()
-            line(settings.FOOTER_TEXT, `receiptPreviewCenter ${textClass}`)
+            if (settings.FOOTER_TEXT) {
+                line(settings.FOOTER_TEXT, `receiptPreviewCenter ${textClass}`)
+            }
+            if (settings.SHOW_ORDER_TIME) {
+                line(
+                    '26/09/2026 às 12:30',
+                    `receiptPreviewCenter ${textClass}`
+                )
+            }
         }
 
         preview.innerHTML = chunks.join('')
@@ -492,7 +576,7 @@
         document.getElementById(fieldId(via, 'LOGO_POSITION')).value =
             resolvedConfigValue(config, via, 'LOGO_POSITION') === 'bottom' ? 'bottom' : 'top'
         document.getElementById(fieldId(via, 'TEXT_SIZE')).value =
-            String(resolvedConfigValue(config, via, 'TEXT_SIZE') || 'large')
+            String(resolvedConfigValue(config, via, 'TEXT_SIZE') || 'normal')
         document.getElementById(fieldId(via, 'ORDER_SIZE')).value =
             String(resolvedConfigValue(config, via, 'ORDER_SIZE') || 'extra')
         document.getElementById(fieldId(via, 'ITEM_SIZE')).value =
@@ -564,7 +648,9 @@
     }
 
     async function resetSettings() {
-        const resetConfig = {}
+        const resetConfig = {
+            RECEIPT_PAPER_WIDTH: DEFAULT_PAPER_WIDTH,
+        }
 
         for (const via of [1, 2]) {
             for (const suffix of VIA_SUFFIXES) {
@@ -572,6 +658,9 @@
                     via === 2 && suffix === 'TITLE' ? 'ENTREGA' : DEFAULTS[suffix]
             }
         }
+
+        const paperWidthField = document.getElementById('RECEIPT_PAPER_WIDTH')
+        if (paperWidthField) paperWidthField.value = DEFAULT_PAPER_WIDTH
 
         setViaFields(resetConfig, 1)
         setViaFields(resetConfig, 2)
@@ -592,6 +681,17 @@
         mount.innerHTML = `
             <div class="receiptSettingsGrid">
                 <div>
+                    <div class="field receiptPaperWidthField">
+                        <label for="RECEIPT_PAPER_WIDTH">Largura do papel</label>
+                        <select id="RECEIPT_PAPER_WIDTH">
+                            <option value="58">58 mm</option>
+                            <option value="80">80 mm</option>
+                        </select>
+                        <p class="localOnly">
+                            Ajusta as colunas para manter preços alinhados e evitar quebras.
+                        </p>
+                    </div>
+
                     <div id="receiptViaTabs" class="receiptViaTabs hidden">
                         <button id="receiptViaTab1" class="receiptViaTab active" type="button">Via 1</button>
                         <button id="receiptViaTab2" class="receiptViaTab" type="button">Via 2</button>
@@ -617,6 +717,14 @@
         `
 
         const config = await window.api.getConfig()
+        const paperWidthField = document.getElementById('RECEIPT_PAPER_WIDTH')
+        if (paperWidthField) {
+            paperWidthField.value =
+                String(config.RECEIPT_PAPER_WIDTH || DEFAULT_PAPER_WIDTH) === '80'
+                    ? '80'
+                    : DEFAULT_PAPER_WIDTH
+        }
+
         via2Customized = VIA_SUFFIXES.some(suffix =>
             Object.prototype.hasOwnProperty.call(config, configKey(2, suffix))
         )
@@ -626,6 +734,11 @@
         updateLogoControls(1)
         updateLogoControls(2)
         await Promise.all([loadLogoPreview(1), loadLogoPreview(2)])
+
+        document.getElementById('RECEIPT_PAPER_WIDTH')?.addEventListener(
+            'change',
+            scheduleSave
+        )
 
         for (const via of [1, 2]) {
             document.getElementById(fieldId(via, 'TITLE'))?.addEventListener('input', () => {
