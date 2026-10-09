@@ -121,8 +121,10 @@
     }
 
     function getViaSettings(via) {
+        const title = value(fieldId(via, 'TITLE')).trim().slice(0, 24)
+
         return {
-            TITLE: value(fieldId(via, 'TITLE')).trim().slice(0, 24) || (via === 2 ? 'ENTREGA' : 'COZINHA'),
+            TITLE: via === 2 ? title : (title || 'COZINHA'),
             FOOTER_TEXT: value(fieldId(via, 'FOOTER_TEXT')).trim().slice(0, 120),
             SHOW_ORDER_TIME: checked(fieldId(via, 'SHOW_ORDER_TIME')),
             SHOW_CUSTOMER_NAME: checked(fieldId(via, 'SHOW_CUSTOMER_NAME')),
@@ -261,14 +263,17 @@
         const itemClass = previewSizeClass(settings.ITEM_SIZE)
         const orderClass = previewSizeClass(settings.ORDER_SIZE)
         const totalClass = previewSizeClass(settings.TOTAL_SIZE)
-        const separator = '_'.repeat(40)
+        const separatorLine = () => {
+            chunks.push('<span class="receiptPreviewSeparator" aria-hidden="true"></span>')
+        }
 
-        line(settings.TITLE.toUpperCase(), 'receiptPreviewBold receiptPreviewCenter')
-        line(separator)
-        gap()
+        if (settings.TITLE) {
+            line(settings.TITLE.toUpperCase(), 'receiptPreviewBold receiptPreviewCenter')
+            separatorLine()
+            gap()
+        }
         line('PEDIDO #42', `receiptPreviewBold ${orderClass}`)
         if (settings.SHOW_ORDER_TIME) line('Hora: 26/09/2026 12:30:00', textClass)
-        line('Tipo: Entrega', textClass)
         if (settings.SHOW_CUSTOMER_NAME) line('Cliente: Maria', textClass)
         if (settings.SHOW_CUSTOMER_PHONE) line('Telefone: (11) 99999-9999', textClass)
         if (settings.SHOW_ADDRESS) {
@@ -276,7 +281,7 @@
             line('Rua Exemplo, 123 - Centro', textClass)
         }
         if (settings.SHOW_PAYMENT) line('Pagamento: Pix (pago online)', textClass)
-        line(separator)
+        separatorLine()
         gap()
         line(
             settings.SHOW_ITEM_PRICES
@@ -299,12 +304,12 @@
         if (settings.SHOW_OBSERVATIONS) {
             line('  OBS: Sem cebola', `receiptPreviewBold ${textClass}`)
         }
-        line(separator)
+        separatorLine()
         gap()
         if (settings.SHOW_TOTALS) {
             line(receiptRow('Subtotal', 'R$ 41,00'), textClass)
             line(receiptRow('Entrega', 'R$ 5,00'), textClass)
-            line(separator)
+            separatorLine()
             gap()
             line(
                 receiptRow(
@@ -475,8 +480,11 @@
     }
 
     function setViaFields(config, via) {
+        const resolvedTitle = resolvedConfigValue(config, via, 'TITLE')
         document.getElementById(fieldId(via, 'TITLE')).value =
-            String(resolvedConfigValue(config, via, 'TITLE') || (via === 2 ? 'ENTREGA' : 'COZINHA'))
+            via === 2
+                ? String(resolvedTitle ?? '')
+                : String(resolvedTitle || 'COZINHA')
         document.getElementById(fieldId(via, 'FOOTER_TEXT')).value =
             String(resolvedConfigValue(config, via, 'FOOTER_TEXT') || '')
         document.getElementById(fieldId(via, 'LOGO_PATH')).value =

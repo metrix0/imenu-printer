@@ -1476,9 +1476,12 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
         return fallback
     }
 
-    const receiptTitle = String(
+    const rawReceiptTitle = String(
         receiptSetting('TITLE', receiptConfig.RECEIPT_NAME_1 || 'COZINHA')
-    ).trim().slice(0, 24) || 'COZINHA'
+    ).trim().slice(0, 24)
+    const receiptTitle = via === 2
+        ? rawReceiptTitle
+        : (rawReceiptTitle || 'COZINHA')
     const receiptFooter = String(receiptSetting('FOOTER_TEXT', ''))
         .trim()
         .slice(0, 120)
@@ -1544,11 +1547,13 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
         : null
     let text = printerStart()
 
-    text += ESC.alignCenter
-    text += ESC.boldOn + ESC.normalSize + `${receiptTitle}\n`
-    text += ESC.boldOff + ESC.alignLeft
-    text += `${separator}\n`
-    text += sectionGap
+    if (receiptTitle) {
+        text += ESC.alignCenter
+        text += ESC.boldOn + ESC.normalSize + `${receiptTitle}\n`
+        text += ESC.boldOff + ESC.alignLeft
+        text += `${separator}\n`
+        text += sectionGap
+    }
 
     text += ESC.boldOn + receiptTextSizeCommand(orderSize)
     text += `PEDIDO #${order.display_id}\n`
@@ -1569,10 +1574,12 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
     if (showOrderTime) {
         text += `Hora: ${new Date(order.created_at).toLocaleString('pt-BR')}\n`
     }
-    text += `Tipo: ${tableOrder ? 'Mesa' : pickup ? 'Retirada' : 'Entrega'}\n`
 
     if (tableOrder) {
+        text += 'Tipo: Mesa\n'
         text += `Mesa: ${order.table_name_snapshot || 'Mesa'}\n`
+    } else if (pickup) {
+        text += 'Tipo: Retirada\n'
     }
 
     if (showCustomerName && order.customer_name) {
