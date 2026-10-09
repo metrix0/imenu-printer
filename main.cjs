@@ -39,6 +39,11 @@ const RECEIPT_WIDTH = 40
 const RECEIPT_LOGO_MAX_WIDTH = 320
 const RECEIPT_LOGO_MAX_HEIGHT = 160
 const RECEIPT_LOGO_THRESHOLD = 180
+const RECEIPT_LOGO_SIZES = {
+    small: { width: 160, height: 80 },
+    medium: { width: 240, height: 120 },
+    large: { width: RECEIPT_LOGO_MAX_WIDTH, height: RECEIPT_LOGO_MAX_HEIGHT },
+}
 const MAX_PRINT_ATTEMPTS = 3
 const FINAL_PRINT_RETRY_DELAY_MS = 30 * 1000
 const PRINT_OPERATION_TIMEOUT_MS = 20 * 1000
@@ -72,6 +77,7 @@ const ESC = {
     boldOff: '\x1B\x45\x00',
 
     normalSize: '\x1D\x21\x00',
+    doubleHeight: '\x1D\x21\x10',
     doubleSize: '\x1D\x21\x11',
 
     underlineOff: '\x1B\x2D\x00',
@@ -467,9 +473,15 @@ function readConfig() {
         RECEIPT_SHOW_SUBITEMS: true,
         RECEIPT_SHOW_OBSERVATIONS: true,
         RECEIPT_SHOW_TOTALS: true,
+        RECEIPT_TEXT_SIZE: 'large',
+        RECEIPT_ORDER_SIZE: 'extra',
+        RECEIPT_ITEM_SIZE: 'large',
+        RECEIPT_TOTAL_SIZE: 'extra',
+        RECEIPT_SPACING: 'normal',
         RECEIPT_SHOW_LOGO: false,
         RECEIPT_LOGO_PATH: '',
         RECEIPT_LOGO_POSITION: 'top',
+        RECEIPT_LOGO_SIZE: 'large',
 
         POLL_EVERY_MS: 60000,
         CONNECT_TIMEOUT_MS: 5000,
@@ -819,13 +831,23 @@ function normalizeReceiptLogoPosition(value) {
     return String(value || '').toLowerCase() === 'bottom' ? 'bottom' : 'top'
 }
 
-function loadMonochromeReceiptLogo(imagePath) {
+function normalizeReceiptLogoSize(value) {
+    const normalized = String(value || '').trim().toLowerCase()
+    return Object.prototype.hasOwnProperty.call(RECEIPT_LOGO_SIZES, normalized)
+        ? normalized
+        : 'large'
+}
+
+function loadMonochromeReceiptLogo(imagePath, logoSize = 'large') {
     const normalizedPath = String(imagePath || '').trim()
     if (!normalizedPath || !fs.existsSync(normalizedPath)) return null
 
+    const normalizedSize = normalizeReceiptLogoSize(logoSize)
+    const target = RECEIPT_LOGO_SIZES[normalizedSize]
     const stats = fs.statSync(normalizedPath)
-    const cacheKey = `${normalizedPath}:${stats.mtimeMs}:${stats.size}`
-    const cached = receiptLogoCache.get(normalizedPath)
+    const cacheId = `${normalizedPath}:${normalizedSize}`
+    const cacheKey = `${normalizedPath}:${stats.mtimeMs}:${stats.size}:${normalizedSize}`
+    const cached = receiptLogoCache.get(cacheId)
     if (cached?.cacheKey === cacheKey) return cached
 
     const source = nativeImage.createFromPath(normalizedPath)
@@ -836,8 +858,8 @@ function loadMonochromeReceiptLogo(imagePath) {
 
     const scale = Math.min(
         1,
-        RECEIPT_LOGO_MAX_WIDTH / sourceSize.width,
-        RECEIPT_LOGO_MAX_HEIGHT / sourceSize.height
+        target.width / sourceSize.width,
+        target.height / sourceSize.height
     )
     const width = Math.max(1, Math.round(sourceSize.width * scale))
     const height = Math.max(1, Math.round(sourceSize.height * scale))
@@ -867,12 +889,12 @@ function loadMonochromeReceiptLogo(imagePath) {
         previewDataUrl: monochromeImage.toDataURL(),
     }
 
-    receiptLogoCache.set(normalizedPath, processed)
+    receiptLogoCache.set(cacheId, processed)
     return processed
 }
 
-function createReceiptLogoRasterBuffer(imagePath) {
-    const processed = loadMonochromeReceiptLogo(imagePath)
+function createReceiptLogoRasterBuffer(imagePath, logoSize = 'large') {
+    const processed = loadMonochromeReceiptLogo(imagePath, logoSize)
     if (!processed) return null
 
     const rowBytes = Math.ceil(processed.width / 8)
@@ -912,7 +934,11 @@ function createReceiptLogoBuffer(config, via) {
     const imagePath = String(getReceiptLogoSetting(config, via, 'LOGO_PATH', '') || '').trim()
     if (!imagePath) return null
 
-    return createReceiptLogoRasterBuffer(imagePath)
+    const logoSize = normalizeReceiptLogoSize(
+        getReceiptLogoSetting(config, via, 'LOGO_SIZE', 'large')
+    )
+
+    return createReceiptLogoRasterBuffer(imagePath, logoSize)
 }
 
 function getReceiptLogoPreviewPayload(imagePath) {
@@ -1396,6 +1422,37 @@ function paymentLabel(method) {
     return paymentMap[method] ?? method
 }
 
+function normalizeReceiptTextSize(value, fallback = 'normal', allowExtra = false) {
+    const normalized = String(value || '').trim().toLowerCase()
+    const allowed = allowExtra
+        ? new Set(['normal', 'large', 'extra'])
+        : new Set(['normal', 'large'])
+    return allowed.has(normalized) ? normalized : fallback
+}
+
+function receiptTextSizeCommand(size) {
+    if (size === 'extra') return ESC.doubleSize
+    if (size === 'large') return ESC.doubleHeight
+    return ESC.normalSize
+}
+
+function receiptTextWidth(size) {
+    return size === 'extra' ? Math.floor(RECEIPT_WIDTH / 2) : RECEIPT_WIDTH
+}
+
+function normalizeReceiptSpacing(value) {
+    const normalized = String(value || '').trim().toLowerCase()
+    return ['compact', 'normal', 'spacious'].includes(normalized)
+        ? normalized
+        : 'normal'
+}
+
+function receiptSectionGap(spacing) {
+    if (spacing === 'spacious') return '\n\n'
+    if (spacing === 'normal') return '\n'
+    return ''
+}
+
 async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via = 1, receiptData = null) {
     const receiptSetting = (suffix, fallback) => {
         const primaryKey = `RECEIPT_${suffix}`
@@ -1434,6 +1491,28 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
     const showSubitems = receiptSetting('SHOW_SUBITEMS', true) !== false
     const showObservations = receiptSetting('SHOW_OBSERVATIONS', true) !== false
     const showTotals = receiptSetting('SHOW_TOTALS', true) !== false
+    const textSize = normalizeReceiptTextSize(
+        receiptSetting('TEXT_SIZE', 'large'),
+        'large'
+    )
+    const orderSize = normalizeReceiptTextSize(
+        receiptSetting('ORDER_SIZE', 'extra'),
+        'extra',
+        true
+    )
+    const itemSize = normalizeReceiptTextSize(
+        receiptSetting('ITEM_SIZE', 'large'),
+        'large'
+    )
+    const totalSize = normalizeReceiptTextSize(
+        receiptSetting('TOTAL_SIZE', 'extra'),
+        'extra',
+        true
+    )
+    const receiptSpacing = normalizeReceiptSpacing(
+        receiptSetting('SPACING', 'normal')
+    )
+    const sectionGap = receiptSectionGap(receiptSpacing)
 
     const { order, items, subitems } = receiptData || await printerApi('receipt', { order_id: orderId })
 
@@ -1449,7 +1528,9 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
 
     const tableOrder = isTableOrder(order)
     const pickup = isPickupOrder(order)
-    const separator = '-'.repeat(RECEIPT_WIDTH)
+    // Keep separators and typography on ESC/POS text commands only.
+    // This preserves the same printer compatibility as the existing receipt path.
+    const separator = '_'.repeat(RECEIPT_WIDTH)
     const scheduledDate = order.scheduled_for ? new Date(order.scheduled_for) : null
     const scheduledLabel = scheduledDate && !Number.isNaN(scheduledDate.getTime())
         ? scheduledDate.toLocaleString('pt-BR', {
@@ -1464,23 +1545,27 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
     let text = printerStart()
 
     text += ESC.alignCenter
-    text += ESC.boldOn + ESC.doubleSize + `${receiptTitle}\n`
-    text += ESC.normalSize + ESC.boldOff
-    text += ESC.alignLeft
+    text += ESC.boldOn + ESC.normalSize + `${receiptTitle}\n`
+    text += ESC.boldOff + ESC.alignLeft
     text += `${separator}\n`
+    text += sectionGap
 
-    text += ESC.boldOn + `PEDIDO #${order.display_id}\n` + ESC.boldOff
+    text += ESC.boldOn + receiptTextSizeCommand(orderSize)
+    text += `PEDIDO #${order.display_id}\n`
+    text += ESC.normalSize + ESC.boldOff
 
     if (scheduledLabel) {
         text += `${separator}\n`
         text += ESC.alignCenter
-        text += ESC.boldOn + ESC.doubleSize + 'AGENDADO\n'
+        text += ESC.boldOn + receiptTextSizeCommand(orderSize) + 'AGENDADO\n'
         text += ESC.normalSize
         text += ESC.boldOn + `${pickup ? 'RETIRADA' : 'ENTREGA'}: ${scheduledLabel}\n` + ESC.boldOff
         text += ESC.alignLeft
         text += `${separator}\n`
+        text += sectionGap
     }
 
+    text += receiptTextSizeCommand(textSize)
     if (showOrderTime) {
         text += `Hora: ${new Date(order.created_at).toLocaleString('pt-BR')}\n`
     }
@@ -1507,7 +1592,9 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
         text += `Pagamento: ${paymentLabel(order.payment_method)}\n`
     }
 
+    text += ESC.normalSize
     text += `${separator}\n`
+    text += sectionGap
 
     for (const item of items || []) {
         const quantity = Math.max(1, Number(item.quantity) || 1)
@@ -1516,15 +1603,20 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
             numericCents(item.price_cents) * quantity
         )
 
-        text += ESC.boldOn
+        text += ESC.boldOn + receiptTextSizeCommand(itemSize)
         text += showItemPrices
-            ? receiptRow(`${quantity}x ${item.name}`, money(itemTotal))
+            ? receiptRow(
+                `${quantity}x ${item.name}`,
+                money(itemTotal),
+                receiptTextWidth(itemSize)
+            )
             : `${quantity}x ${item.name}\n`
-        text += ESC.boldOff
+        text += ESC.normalSize + ESC.boldOff
 
         const selectedSubitems = subitemsByOrderItem[item.id] || []
 
         if (showSubitems) {
+            text += receiptTextSizeCommand(textSize)
             for (const selected of selectedSubitems) {
                 const selectedQuantity = Math.max(1, Number(selected.quantity) || 1)
                 const selectedPrice = numericCents(selected.price_cents)
@@ -1533,18 +1625,23 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
                 text += showItemPrices && selectedPrice > 0
                     ? receiptRow(
                         selectedLabel,
-                        `+${money(selectedPrice * selectedQuantity)}`
+                        `+${money(selectedPrice * selectedQuantity)}`,
+                        receiptTextWidth(textSize)
                     )
                     : `${selectedLabel}\n`
             }
+            text += ESC.normalSize
         }
 
         if (showObservations && item.observation) {
+            text += ESC.boldOn + receiptTextSizeCommand(textSize)
             text += `  OBS: ${item.observation}\n`
+            text += ESC.normalSize + ESC.boldOff
         }
     }
 
     text += `${separator}\n`
+    text += sectionGap
 
     const subtotal = numericCents(order.subtotal_cents)
     const delivery = pickup || tableOrder ? 0 : numericCents(order.delivery_cents)
@@ -1558,26 +1655,39 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
     )
 
     if (showTotals) {
-        text += receiptRow('Subtotal', money(subtotal))
+        text += receiptTextSizeCommand(textSize)
+        text += receiptRow('Subtotal', money(subtotal), receiptTextWidth(textSize))
 
         if (delivery > 0) {
-            text += receiptRow('Entrega', money(delivery))
+            text += receiptRow('Entrega', money(delivery), receiptTextWidth(textSize))
         }
 
         if (discount > 0) {
-            text += receiptRow('Desconto', `-${money(discount)}`)
+            text += receiptRow(
+                'Desconto',
+                `-${money(discount)}`,
+                receiptTextWidth(textSize)
+            )
         }
 
-        text += ESC.boldOn
-        text += receiptRow('TOTAL', money(total))
-        text += ESC.boldOff
+        text += ESC.normalSize
+        text += `${separator}\n`
+        text += sectionGap
+        text += ESC.boldOn + receiptTextSizeCommand(totalSize)
+        text += receiptRow(
+            'TOTAL',
+            money(total),
+            receiptTextWidth(totalSize)
+        )
+        text += ESC.normalSize + ESC.boldOff
     }
 
     if (receiptFooter) {
-        text += '\n'
+        text += sectionGap || '\n'
         text += ESC.alignCenter
+        text += receiptTextSizeCommand(textSize)
         text += `${receiptFooter}\n`
-        text += ESC.alignLeft
+        text += ESC.normalSize + ESC.alignLeft
     }
 
     const ending = '\n\n\n' + ESC.cut

@@ -12,9 +12,15 @@
         'SHOW_SUBITEMS',
         'SHOW_OBSERVATIONS',
         'SHOW_TOTALS',
+        'TEXT_SIZE',
+        'ORDER_SIZE',
+        'ITEM_SIZE',
+        'TOTAL_SIZE',
+        'SPACING',
         'SHOW_LOGO',
         'LOGO_PATH',
         'LOGO_POSITION',
+        'LOGO_SIZE',
     ]
     const DEFAULTS = {
         TITLE: 'COZINHA',
@@ -28,9 +34,15 @@
         SHOW_SUBITEMS: true,
         SHOW_OBSERVATIONS: true,
         SHOW_TOTALS: true,
+        TEXT_SIZE: 'large',
+        ORDER_SIZE: 'extra',
+        ITEM_SIZE: 'large',
+        TOTAL_SIZE: 'extra',
+        SPACING: 'normal',
         SHOW_LOGO: false,
         LOGO_PATH: '',
         LOGO_POSITION: 'top',
+        LOGO_SIZE: 'large',
     }
 
     let saveTimer = null
@@ -52,6 +64,11 @@
 
     function value(id) {
         return document.getElementById(id)?.value || ''
+    }
+
+    function normalizedChoice(id, allowed, fallback) {
+        const candidate = value(id).trim().toLowerCase()
+        return allowed.includes(candidate) ? candidate : fallback
     }
 
     function localFileName(filePath) {
@@ -116,9 +133,39 @@
             SHOW_SUBITEMS: checked(fieldId(via, 'SHOW_SUBITEMS')),
             SHOW_OBSERVATIONS: checked(fieldId(via, 'SHOW_OBSERVATIONS')),
             SHOW_TOTALS: checked(fieldId(via, 'SHOW_TOTALS')),
+            TEXT_SIZE: normalizedChoice(
+                fieldId(via, 'TEXT_SIZE'),
+                ['normal', 'large'],
+                'large'
+            ),
+            ORDER_SIZE: normalizedChoice(
+                fieldId(via, 'ORDER_SIZE'),
+                ['normal', 'large', 'extra'],
+                'extra'
+            ),
+            ITEM_SIZE: normalizedChoice(
+                fieldId(via, 'ITEM_SIZE'),
+                ['normal', 'large'],
+                'large'
+            ),
+            TOTAL_SIZE: normalizedChoice(
+                fieldId(via, 'TOTAL_SIZE'),
+                ['normal', 'large', 'extra'],
+                'extra'
+            ),
+            SPACING: normalizedChoice(
+                fieldId(via, 'SPACING'),
+                ['compact', 'normal', 'spacious'],
+                'normal'
+            ),
             SHOW_LOGO: checked(fieldId(via, 'SHOW_LOGO')),
             LOGO_PATH: value(fieldId(via, 'LOGO_PATH')).trim(),
             LOGO_POSITION: value(fieldId(via, 'LOGO_POSITION')) === 'bottom' ? 'bottom' : 'top',
+            LOGO_SIZE: normalizedChoice(
+                fieldId(via, 'LOGO_SIZE'),
+                ['small', 'medium', 'large'],
+                'large'
+            ),
         }
     }
 
@@ -148,6 +195,31 @@
         return `${left}${' '.repeat(room)}${right}`
     }
 
+    function escapeHtml(value) {
+        return String(value ?? '')
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('"', '&quot;')
+            .replaceAll("'", '&#039;')
+    }
+
+    function previewSizeClass(size) {
+        if (size === 'extra') return 'receiptPreviewSizeExtra'
+        if (size === 'large') return 'receiptPreviewSizeLarge'
+        return ''
+    }
+
+    function previewGapClass(spacing) {
+        if (spacing === 'spacious') return 'receiptPreviewGapSpacious'
+        if (spacing === 'normal') return 'receiptPreviewGapNormal'
+        return ''
+    }
+
+    function previewRowWidth(size) {
+        return size === 'extra' ? 20 : 40
+    }
+
     function renderPreview() {
         const preview = document.getElementById('receiptPreviewText')
         const label = document.getElementById('receiptPreviewLabel')
@@ -156,60 +228,99 @@
         if (!preview) return
 
         const settings = getViaSettings(activeVia)
-        const lines = []
         const logoPreview = logoPreviewByVia[activeVia]
         const showLogo = settings.SHOW_LOGO && Boolean(settings.LOGO_PATH) && Boolean(logoPreview)
         const logoAtBottom = settings.LOGO_POSITION === 'bottom'
+        const logoWidths = { small: '42%', medium: '62%', large: '80%' }
+        const logoMaxHeights = { small: '70px', medium: '95px', large: '120px' }
 
         if (label) label.textContent = `Prévia aproximada — Via ${activeVia}`
 
-        if (logoTop) {
-            logoTop.src = showLogo && !logoAtBottom ? logoPreview : ''
-            logoTop.classList.toggle('hidden', !showLogo || logoAtBottom)
-        }
-        if (logoBottom) {
-            logoBottom.src = showLogo && logoAtBottom ? logoPreview : ''
-            logoBottom.classList.toggle('hidden', !showLogo || !logoAtBottom)
+        for (const [element, visible] of [
+            [logoTop, showLogo && !logoAtBottom],
+            [logoBottom, showLogo && logoAtBottom],
+        ]) {
+            if (!element) continue
+            element.src = visible ? logoPreview : ''
+            element.classList.toggle('hidden', !visible)
+            element.style.maxWidth = logoWidths[settings.LOGO_SIZE] || logoWidths.large
+            element.style.maxHeight = logoMaxHeights[settings.LOGO_SIZE] || logoMaxHeights.large
         }
 
-        lines.push(settings.TITLE.toUpperCase())
-        lines.push('----------------------------------------')
-        lines.push('PEDIDO #42')
-        if (settings.SHOW_ORDER_TIME) lines.push('Hora: 26/09/2026 12:30:00')
-        lines.push('Tipo: Entrega')
-        if (settings.SHOW_CUSTOMER_NAME) lines.push('Cliente: Maria')
-        if (settings.SHOW_CUSTOMER_PHONE) lines.push('Telefone: (11) 99999-9999')
-        if (settings.SHOW_ADDRESS) {
-            lines.push('Endereco:')
-            lines.push('Rua Exemplo, 123 - Centro')
-        }
-        if (settings.SHOW_PAYMENT) lines.push('Pagamento: Pix (pago online)')
-        lines.push('----------------------------------------')
-        lines.push(
-            settings.SHOW_ITEM_PRICES
-                ? receiptRow('2x X-Burger', 'R$ 38,00')
-                : '2x X-Burger'
-        )
-        if (settings.SHOW_SUBITEMS) {
-            lines.push(
-                settings.SHOW_ITEM_PRICES
-                    ? receiptRow('  - 1x Bacon', '+R$ 3,00')
-                    : '  - 1x Bacon'
+        const chunks = []
+        const line = (text, classes = '') => {
+            chunks.push(
+                `<span class="receiptPreviewLine ${classes}">${escapeHtml(text)}</span>`
             )
         }
-        if (settings.SHOW_OBSERVATIONS) lines.push('  OBS: Sem cebola')
-        lines.push('----------------------------------------')
+        const gap = () => {
+            const className = previewGapClass(settings.SPACING)
+            if (className) chunks.push(`<span class="${className}"></span>`)
+        }
+        const textClass = previewSizeClass(settings.TEXT_SIZE)
+        const itemClass = previewSizeClass(settings.ITEM_SIZE)
+        const orderClass = previewSizeClass(settings.ORDER_SIZE)
+        const totalClass = previewSizeClass(settings.TOTAL_SIZE)
+        const separator = '_'.repeat(40)
+
+        line(settings.TITLE.toUpperCase(), 'receiptPreviewBold receiptPreviewCenter')
+        line(separator)
+        gap()
+        line('PEDIDO #42', `receiptPreviewBold ${orderClass}`)
+        if (settings.SHOW_ORDER_TIME) line('Hora: 26/09/2026 12:30:00', textClass)
+        line('Tipo: Entrega', textClass)
+        if (settings.SHOW_CUSTOMER_NAME) line('Cliente: Maria', textClass)
+        if (settings.SHOW_CUSTOMER_PHONE) line('Telefone: (11) 99999-9999', textClass)
+        if (settings.SHOW_ADDRESS) {
+            line('Endereco:', textClass)
+            line('Rua Exemplo, 123 - Centro', textClass)
+        }
+        if (settings.SHOW_PAYMENT) line('Pagamento: Pix (pago online)', textClass)
+        line(separator)
+        gap()
+        line(
+            settings.SHOW_ITEM_PRICES
+                ? receiptRow(
+                    '2x X-Burger',
+                    'R$ 38,00',
+                    previewRowWidth(settings.ITEM_SIZE)
+                )
+                : '2x X-Burger',
+            `receiptPreviewBold ${itemClass}`
+        )
+        if (settings.SHOW_SUBITEMS) {
+            line(
+                settings.SHOW_ITEM_PRICES
+                    ? receiptRow('  - 1x Bacon', '+R$ 3,00')
+                    : '  - 1x Bacon',
+                textClass
+            )
+        }
+        if (settings.SHOW_OBSERVATIONS) {
+            line('  OBS: Sem cebola', `receiptPreviewBold ${textClass}`)
+        }
+        line(separator)
+        gap()
         if (settings.SHOW_TOTALS) {
-            lines.push(receiptRow('Subtotal', 'R$ 41,00'))
-            lines.push(receiptRow('Entrega', 'R$ 5,00'))
-            lines.push(receiptRow('TOTAL', 'R$ 46,00'))
+            line(receiptRow('Subtotal', 'R$ 41,00'), textClass)
+            line(receiptRow('Entrega', 'R$ 5,00'), textClass)
+            line(separator)
+            gap()
+            line(
+                receiptRow(
+                    'TOTAL',
+                    'R$ 46,00',
+                    previewRowWidth(settings.TOTAL_SIZE)
+                ),
+                `receiptPreviewBold ${totalClass}`
+            )
         }
         if (settings.FOOTER_TEXT) {
-            lines.push('')
-            lines.push(settings.FOOTER_TEXT)
+            gap()
+            line(settings.FOOTER_TEXT, `receiptPreviewCenter ${textClass}`)
         }
 
-        preview.textContent = lines.join('\n')
+        preview.innerHTML = chunks.join('')
     }
 
     async function saveSettings() {
@@ -238,6 +349,20 @@
         `
     }
 
+    function selectField(via, suffix, label, options) {
+        const id = fieldId(via, suffix)
+        const optionMarkup = options
+            .map(option => `<option value="${option.value}">${option.label}</option>`)
+            .join('')
+
+        return `
+            <div class="field" style="margin-top:0">
+                <label for="${id}">${label}</label>
+                <select id="${id}">${optionMarkup}</select>
+            </div>
+        `
+    }
+
     function logoControls(via) {
         return `
             <div id="${fieldId(via, 'LOGO_CONTROLS')}" class="receiptLogoControls hidden">
@@ -258,6 +383,11 @@
                             <option value="bottom">No final</option>
                         </select>
                     </div>
+                    ${selectField(via, 'LOGO_SIZE', 'Tamanho do logo', [
+                        { value: 'small', label: 'Pequeno' },
+                        { value: 'medium', label: 'Médio' },
+                        { value: 'large', label: 'Grande' },
+                    ])}
                 </div>
             </div>
         `
@@ -275,6 +405,32 @@
                         <label for="${fieldId(via, 'FOOTER_TEXT')}">Texto no final</label>
                         <input id="${fieldId(via, 'FOOTER_TEXT')}" maxlength="120" placeholder="Ex.: Obrigado!" />
                     </div>
+                </div>
+
+                <div class="receiptFieldsGrid receiptAppearanceFields">
+                    ${selectField(via, 'TEXT_SIZE', 'Tamanho do texto', [
+                        { value: 'normal', label: 'Normal' },
+                        { value: 'large', label: 'Grande' },
+                    ])}
+                    ${selectField(via, 'ORDER_SIZE', 'Número do pedido', [
+                        { value: 'normal', label: 'Normal' },
+                        { value: 'large', label: 'Grande' },
+                        { value: 'extra', label: 'Extra grande' },
+                    ])}
+                    ${selectField(via, 'ITEM_SIZE', 'Itens', [
+                        { value: 'normal', label: 'Normal' },
+                        { value: 'large', label: 'Grande' },
+                    ])}
+                    ${selectField(via, 'TOTAL_SIZE', 'Total', [
+                        { value: 'normal', label: 'Normal' },
+                        { value: 'large', label: 'Grande' },
+                        { value: 'extra', label: 'Extra grande' },
+                    ])}
+                    ${selectField(via, 'SPACING', 'Espaçamento', [
+                        { value: 'compact', label: 'Compacto' },
+                        { value: 'normal', label: 'Normal' },
+                        { value: 'spacious', label: 'Espaçoso' },
+                    ])}
                 </div>
 
                 <div class="receiptToggles">
@@ -327,6 +483,18 @@
             String(resolvedConfigValue(config, via, 'LOGO_PATH') || '')
         document.getElementById(fieldId(via, 'LOGO_POSITION')).value =
             resolvedConfigValue(config, via, 'LOGO_POSITION') === 'bottom' ? 'bottom' : 'top'
+        document.getElementById(fieldId(via, 'TEXT_SIZE')).value =
+            String(resolvedConfigValue(config, via, 'TEXT_SIZE') || 'large')
+        document.getElementById(fieldId(via, 'ORDER_SIZE')).value =
+            String(resolvedConfigValue(config, via, 'ORDER_SIZE') || 'extra')
+        document.getElementById(fieldId(via, 'ITEM_SIZE')).value =
+            String(resolvedConfigValue(config, via, 'ITEM_SIZE') || 'large')
+        document.getElementById(fieldId(via, 'TOTAL_SIZE')).value =
+            String(resolvedConfigValue(config, via, 'TOTAL_SIZE') || 'extra')
+        document.getElementById(fieldId(via, 'SPACING')).value =
+            String(resolvedConfigValue(config, via, 'SPACING') || 'normal')
+        document.getElementById(fieldId(via, 'LOGO_SIZE')).value =
+            String(resolvedConfigValue(config, via, 'LOGO_SIZE') || 'large')
 
         for (const suffix of VIA_SUFFIXES) {
             if (typeof DEFAULTS[suffix] !== 'boolean') continue
@@ -470,10 +638,21 @@
                 })
             }
 
-            document.getElementById(fieldId(via, 'LOGO_POSITION'))?.addEventListener('change', () => {
-                if (via === 2) via2Customized = true
-                scheduleSave()
-            })
+            for (const suffix of [
+                'TEXT_SIZE',
+                'ORDER_SIZE',
+                'ITEM_SIZE',
+                'TOTAL_SIZE',
+                'SPACING',
+                'LOGO_POSITION',
+                'LOGO_SIZE',
+            ]) {
+                document.getElementById(fieldId(via, suffix))?.addEventListener('change', () => {
+                    if (via === 2) via2Customized = true
+                    scheduleSave()
+                })
+            }
+
             document.getElementById(fieldId(via, 'LOGO_SELECT'))?.addEventListener('click', () => {
                 selectLogo(via).catch(() => {})
             })
