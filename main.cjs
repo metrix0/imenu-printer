@@ -1527,9 +1527,7 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
     const rawReceiptTitle = String(
         receiptSetting('TITLE', receiptConfig.RECEIPT_NAME_1 || 'COZINHA')
     ).trim().slice(0, 24)
-    const receiptTitle = via === 2
-        ? rawReceiptTitle
-        : (rawReceiptTitle || 'COZINHA')
+    const receiptTitle = rawReceiptTitle
     const receiptFooter = String(receiptSetting('FOOTER_TEXT', ''))
         .trim()
         .slice(0, 120)
@@ -1599,18 +1597,12 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
         })
         : null
     const receiptItems = items || []
-    const itemLines = receiptItems.length
-    const itemQuantity = receiptItems.reduce(
-        (sum, item) => sum + Math.max(1, Number(item.quantity) || 1),
-        0
-    )
     let text = printerStart()
 
     if (receiptTitle) {
         text += ESC.alignCenter
         text += ESC.boldOn + ESC.normalSize + `${receiptTitle}\n`
         text += ESC.boldOff + ESC.alignLeft
-        text += `${separator}\n`
         text += sectionGap
     }
 
@@ -1657,14 +1649,7 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
     }
 
     text += ESC.normalSize
-
-    if (itemLines > 0) {
-        text += sectionGap
-        text += ESC.boldOn + ESC.doubleHeight
-        text += `${itemLines} ${itemLines === 1 ? 'item' : 'itens'} (Qtd.: ${itemQuantity})\n`
-        text += ESC.normalSize + ESC.boldOff
-    }
-
+    text += sectionGap
     text += `${separator}\n`
     text += sectionGap
 
@@ -1751,15 +1736,16 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
         }
 
         text += ESC.normalSize
-        text += `${separator}\n`
         text += sectionGap
 
         const requestedTotalWidth = receiptTextWidth(totalSize, paperColumns)
         const totalText = money(total)
         const resolvedTotalSize =
-            'TOTAL'.length + totalText.length + 1 > requestedTotalWidth
+            totalSize === 'extra' && paperColumns <= 32
                 ? 'large'
-                : totalSize
+                : 'TOTAL'.length + totalText.length + 1 > requestedTotalWidth
+                  ? 'large'
+                  : totalSize
 
         text += ESC.boldOn + receiptTextSizeCommand(resolvedTotalSize)
         text += receiptRow(

@@ -141,7 +141,7 @@
         const title = value(fieldId(via, 'TITLE')).trim().slice(0, 24)
 
         return {
-            TITLE: via === 2 ? title : (title || 'COZINHA'),
+            TITLE: title,
             FOOTER_TEXT: value(fieldId(via, 'FOOTER_TEXT')).trim().slice(0, 120),
             SHOW_ORDER_TIME: checked(fieldId(via, 'SHOW_ORDER_TIME')),
             SHOW_CUSTOMER_NAME: checked(fieldId(via, 'SHOW_CUSTOMER_NAME')),
@@ -293,7 +293,6 @@
 
         if (settings.TITLE) {
             line(settings.TITLE.toUpperCase(), 'receiptPreviewBold receiptPreviewCenter')
-            separatorLine()
             gap()
         }
 
@@ -310,7 +309,6 @@
         }
 
         gap()
-        line('2 itens (Qtd.: 3)', 'receiptPreviewBold receiptPreviewSizeLarge')
         separatorLine()
         gap()
 
@@ -362,7 +360,6 @@
                 ),
                 textClass
             )
-            separatorLine()
             gap()
 
             const totalText = 'R$ 46,00'
@@ -371,9 +368,11 @@
                 selectedPaperColumns
             )
             const resolvedTotalSize =
-                'TOTAL'.length + totalText.length + 1 > requestedTotalWidth
+                settings.TOTAL_SIZE === 'extra' && selectedPaperColumns <= 32
                     ? 'large'
-                    : settings.TOTAL_SIZE
+                    : 'TOTAL'.length + totalText.length + 1 > requestedTotalWidth
+                      ? 'large'
+                      : settings.TOTAL_SIZE
 
             line(
                 receiptRow(
@@ -566,9 +565,7 @@
     function setViaFields(config, via) {
         const resolvedTitle = resolvedConfigValue(config, via, 'TITLE')
         document.getElementById(fieldId(via, 'TITLE')).value =
-            via === 2
-                ? String(resolvedTitle ?? '')
-                : String(resolvedTitle || 'COZINHA')
+            String(resolvedTitle ?? '')
         document.getElementById(fieldId(via, 'FOOTER_TEXT')).value =
             String(resolvedConfigValue(config, via, 'FOOTER_TEXT') || '')
         document.getElementById(fieldId(via, 'LOGO_PATH')).value =
