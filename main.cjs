@@ -657,6 +657,7 @@ function getSupabase(useServiceRole = false, authOptions = null) {
     const client = createClient(connectionConfig.supabaseUrl, connectionConfig.supabaseAnonKey, {
         auth: {
             storage: authStorage,
+            storageKey: 'sb-mjogdsnxbwhbqcoijrwt-auth-token',
             persistSession: true,
             autoRefreshToken: true,
             detectSessionInUrl: false,
