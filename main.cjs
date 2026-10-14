@@ -6,7 +6,7 @@ const http = require('http')
 const https = require('https')
 const net = require('net')
 const os = require('os')
-const { exec, spawn } = require('child_process')
+const { exec, execFile, spawn } = require('child_process')
 const { createHash } = require('crypto')
 const { createClient } = require('@supabase/supabase-js')
 const { SerialPort } = require('serialport')
@@ -796,38 +796,128 @@ function normalizeComPortName(value) {
         .toUpperCase()
 }
 
-function listWindowsPrinters() {
+
+function runPrinterDiscoveryCommand(script) {
     return new Promise(resolve => {
-        const cmd = `powershell -NoProfile -Command "Get-Printer | Select-Object Name,PortName | ConvertTo-Json -Compress"`
-
-        exec(cmd, (err, stdout) => {
-            if (err) {
-                resolve([])
-                return
-            }
-
-            try {
-                const raw = String(stdout || '').trim()
-                if (!raw) {
-                    resolve([])
-                    return
-                }
-
-                const parsed = JSON.parse(raw)
-                const rows = Array.isArray(parsed) ? parsed : [parsed]
-
-                resolve(rows
-                    .map(printer => ({
-                        name: String(printer.Name || '').trim(),
-                        portName: String(printer.PortName || '').trim(),
-                        type: 'windows-printer',
-                    }))
-                    .filter(printer => printer.name))
-            } catch {
-                resolve([])
-            }
-        })
+        execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+            { timeout: 10000, windowsHide: true, maxBuffer: 256 * 1024 },
+            (error, stdout) => resolve(error ? [] : String(stdout || '').split(/\r?\n/).filter(Boolean))
+        )
     })
+}
+
+function decodeWindowsName(encoded) {
+    try { return Buffer.from(encoded, 'base64').toString('utf8').trim() } catch { return '' }
+}
+
+async function listWindowsPrinters() {
+    // Get-Printer is missing on older Windows; Win32_Printer works on Windows 7.
+    const lines = await runPrinterDiscoveryCommand(
+        "$ErrorActionPreference='SilentlyContinue'; " +
+        "$printers = if (Get-Command Get-Printer -ErrorAction SilentlyContinue) { Get-Printer } else { Get-WmiObject Win32_Printer }; " +
+        "$printers | ForEach-Object { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.Name)) + '|' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.PortName)) }"
+    )
+    return lines.map(line => {
+        const [name, portName] = line.split('|')
+        const decoded = decodeWindowsName(name)
+        return decoded ? { name: decoded, portName: decodeWindowsName(portName), type: 'windows-printer' } : null
+    }).filter(Boolean)
+}
+
+async function listPairedBluetoothDevices() {
+    // Device enumeration is informational: pairing does not imply a usable print connection.
+    const lines = await runPrinterDiscoveryCommand(
+        "$ErrorActionPreference='SilentlyContinue'; " +
+        "Get-WmiObject Win32_PnPEntity | Where-Object { $_.PNPDeviceID -like 'BTHENUM*DEV_*' -or $_.PNPDeviceID -like 'BTHLEDEVICE*' } | " +
+        "ForEach-Object { if ($_.Name) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.Name)) } }"
+    )
+    return [...new Set(lines.map(decodeWindowsName).filter(Boolean))]
+}
+
+function printerNameKey(name) {
+    return String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function isVirtualWindowsPrinter(name) {
+    return /^(microsoft print to pdf|microsoft xps document writer|fax|onenote|send to onenote|adobe pdf)$/i.test(String(name || '').trim())
+}
+
+function buildDiscoveredPrinters(windowsPrinters, comPorts, pairedBluetooth) {
+    const devices = []
+    const recognized = new Set()
+    const detectedPorts = [...comPorts]
+    const nameMatches = (a, b) => {
+        const left = printerNameKey(a)
+        const right = printerNameKey(b)
+        return Boolean(left && right && (left === right ||
+            (left.length >= 6 && right.includes(left)) ||
+            (right.length >= 6 && left.includes(right))))
+    }
+
+    for (const printer of windowsPrinters) {
+        if (isVirtualWindowsPrinter(printer.name)) continue
+        devices.push({
+            id: 'windows:' + printer.name,
+            name: printer.name,
+            detail: 'Instalada no Windows — USB, Bluetooth ou rede',
+            ready: true,
+            mode: 'usb',
+            printerName: printer.name,
+        })
+    }
+
+    // If Windows already has a queue for the same serial port, prefer the queue.
+    const serialPorts = detectedPorts.filter(port =>
+        !windowsPrinters.some(p =>
+            String(p.portName || '').split(',').some(n =>
+                normalizeComPortName(n) === normalizeComPortName(port.path)
+            )
+        )
+    )
+    const unmatchedPaired = pairedBluetooth.filter(name =>
+        !windowsPrinters.some(p => nameMatches(name, p.name))
+    )
+
+    for (const port of serialPorts) {
+        const friendly = String(port.friendlyName || port.manufacturer || '').trim()
+        const match = unmatchedPaired.find(name => nameMatches(friendly, name))
+        // Generic COM ports are not necessarily printers (for example COM1).
+        // Keep them available in advanced settings, not the one-click list.
+        if (!match && !/bluetooth|printer|impressora|thermal|receipt|pos/i.test(friendly)) continue
+        if (match) recognized.add(match)
+        devices.push({
+            id: 'serial:' + port.path,
+            name: match || (friendly && !/^standard serial over bluetooth link/i.test(friendly)
+                ? friendly : 'Dispositivo serial ' + port.path),
+            detail: port.path + (match ? ' — conexão Bluetooth disponível' : ' — testar para confirmar'),
+            ready: true,
+            mode: 'bluetooth',
+            comPort: port.path,
+        })
+    }
+
+    // A single explicitly identified Bluetooth serial port can be offered as a
+    // probable match. The test print, not pairing, confirms the actual route.
+    const candidates = unmatchedPaired.filter(name => !recognized.has(name))
+    const genericBluetoothPorts = devices.filter(d => d.mode === 'bluetooth' &&
+        /bluetooth/i.test(String(serialPorts.find(p => p.path === d.comPort)?.friendlyName || '')))
+    if (candidates.length === 1 && genericBluetoothPorts.length === 1) {
+        genericBluetoothPorts[0].name = candidates[0]
+        genericBluetoothPorts[0].detail += ' (conexão provável)'
+        recognized.add(candidates[0])
+    }
+
+    for (const name of unmatchedPaired) {
+        if (recognized.has(name)) continue
+        devices.push({
+            id: 'paired:' + name,
+            name,
+            detail: 'Bluetooth encontrado — ainda sem conexão de impressão',
+            ready: false,
+            mode: null,
+        })
+    }
+    return devices
 }
 
 function putSavedSelectionFirst(items, savedValue, valueKey, missingItemFactory) {
@@ -857,50 +947,35 @@ function putSavedSelectionFirst(items, savedValue, valueKey, missingItemFactory)
 
 async function detectPrinters() {
     const config = readConfig()
-    const detectedWindowsPrinters = await listWindowsPrinters()
-    const detectedComPorts = (await listComPorts()).map(port => {
+    const [detectedWindowsPrinters, serialPorts, pairedBluetooth] = await Promise.all([
+        listWindowsPrinters(),
+        listComPorts().catch(() => []),
+        listPairedBluetoothDevices(),
+    ])
+    const detectedComPorts = serialPorts.map(port => {
         const portName = normalizeComPortName(port.path)
         const matchingPrinter = detectedWindowsPrinters.find(
-            printer => normalizeComPortName(printer.portName) === portName
+            printer => String(printer.portName || '').split(',').some(name =>
+                normalizeComPortName(name) === portName
+            )
         )
-
-        if (!matchingPrinter) {
-            return port
-        }
-
-        return {
-            ...port,
-            friendlyName: matchingPrinter.name,
-        }
+        return matchingPrinter ? { ...port, friendlyName: matchingPrinter.name } : port
     })
+    const devices = buildDiscoveredPrinters(detectedWindowsPrinters, detectedComPorts, pairedBluetooth)
 
     const comPorts = putSavedSelectionFirst(
-        detectedComPorts,
-        config.PRINTER_COM_PORT,
-        'path',
+        detectedComPorts, config.PRINTER_COM_PORT, 'path',
         savedPath => ({
-            path: savedPath,
-            manufacturer: '',
+            path: savedPath, manufacturer: '',
             friendlyName: 'Salva anteriormente (não detectada agora)',
-            serialNumber: '',
-            type: 'bluetooth-or-serial',
+            serialNumber: '', type: 'bluetooth-or-serial',
         })
     )
-
     const windowsPrinters = putSavedSelectionFirst(
-        detectedWindowsPrinters,
-        config.PRINTER_NAME,
-        'name',
-        savedName => ({
-            name: savedName,
-            type: 'windows-printer',
-        })
+        detectedWindowsPrinters, config.PRINTER_NAME, 'name',
+        savedName => ({ name: savedName, type: 'windows-printer' })
     )
-
-    return {
-        comPorts,
-        windowsPrinters,
-    }
+    return { devices, comPorts, windowsPrinters }
 }
 
 function normalizePrinterText(text) {
@@ -2578,6 +2653,17 @@ ipcMain.handle('config:save', async (_, config) => {
 
 ipcMain.handle('printers:detect', async () => {
     return await detectPrinters()
+})
+
+ipcMain.handle('printers:bluetooth-settings', async () => {
+    if (process.platform !== 'win32') throw new Error('Bluetooth settings require Windows')
+    if (isLegacyBuild()) {
+        const child = spawn('control.exe', ['bthprops.cpl'], { detached: true, stdio: 'ignore' })
+        child.unref()
+    } else {
+        await shell.openExternal('ms-settings:bluetooth')
+    }
+    return { ok: true }
 })
 
 ipcMain.handle('printer:test', async (_, config) => {
