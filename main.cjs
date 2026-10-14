@@ -7,6 +7,7 @@ const https = require('https')
 const net = require('net')
 const os = require('os')
 const { exec, spawn } = require('child_process')
+const { createHash } = require('crypto')
 const { createClient } = require('@supabase/supabase-js')
 const { SerialPort } = require('serialport')
 const iconv = require('iconv-lite')
@@ -14,8 +15,13 @@ const iconv = require('iconv-lite')
 const baseDir = app.getPath('userData')
 const configPath = path.join(baseDir, 'config.json')
 
-const SUPABASE_URL = 'https://mjogdsnxbwhbqcoijrwt.supabase.co'
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qb2dkc254YndoYnFjb2lqcnd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE2NjY4MzUsImV4cCI6MjA3NzI0MjgzNX0.S1XLgP7U9ugTXKh4YTrEvzDaroVMN0LhxWc8B3DnkII"
+const PRINTER_CONFIG_URL = 'https://www.imenuapp.com.br/api/printer/config'
+const connectionConfigPath = path.join(baseDir, 'connection-config.json')
+let connectionConfig = null
+let remoteUpdatePolicy = null
+let mandatoryUpdateWaiting = false
+let activePrintOperations = 0
+let activePrinterCycle = false
 const PRINT_API_URL = process.env.IMENU_PRINTER_API_URL || 'https://www.imenuapp.com.br/api/printer'
 const authSessionPath = path.join(baseDir, 'auth-session.json')
 const GOOGLE_AUTH_CALLBACK_HOST = '127.0.0.1'
@@ -204,6 +210,89 @@ function requestJson(url, redirectCount = 0) {
     })
 }
 
+function validPrinterConnection(data) {
+    if (!data || typeof data.supabaseUrl !== 'string' || typeof data.supabaseAnonKey !== 'string') return null
+    try {
+        const parsed = new URL(data.supabaseUrl)
+        if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null
+        const parts = data.supabaseAnonKey.split('.')
+        const isPublic = data.supabaseAnonKey.startsWith('sb_publishable_') ||
+            (parts.length === 3 && JSON.parse(Buffer.from(parts[1], 'base64url').toString()).role === 'anon')
+        if (!isPublic) return null
+        return { supabaseUrl: parsed.origin + parsed.pathname.replace(/\/+$/, ''), supabaseAnonKey: data.supabaseAnonKey }
+    } catch {
+        return null
+    }
+}
+
+function requiredPrinterUpdate() {
+    return Boolean(remoteUpdatePolicy?.forceUpdate &&
+        /^\d+\.\d+\.\d+$/.test(remoteUpdatePolicy.minimumVersion || '') &&
+        compareVersions(app.getVersion(), remoteUpdatePolicy.minimumVersion) < 0)
+}
+
+async function refreshPrinterConnection() {
+    const url = PRINTER_CONFIG_URL + (isLegacyBuild() ? '?edition=legacy' : '')
+    const data = await withTimeout(requestJson(url), 6000, 'Tempo limite ao buscar configuração da impressora.')
+    const validated = validPrinterConnection(data)
+    if (!validated) throw new Error('Configuração pública inválida.')
+
+    // Existing sessions continue with their connection until the next launch.
+    if (!connectionConfig) connectionConfig = validated
+    const policy = data.updates
+    remoteUpdatePolicy = policy?.forceUpdate === true &&
+        typeof policy.latestVersion === 'string' && /^\d+\.\d+\.\d+$/.test(policy.latestVersion) &&
+        typeof policy.minimumVersion === 'string' && /^\d+\.\d+\.\d+$/.test(policy.minimumVersion) &&
+        compareVersions(policy.minimumVersion, policy.latestVersion) <= 0
+        ? { latestVersion: policy.latestVersion, minimumVersion: policy.minimumVersion,
+            forceUpdate: true, downloadUrl: policy.downloadUrl }
+        : null
+
+    try {
+        fs.mkdirSync(baseDir, { recursive: true })
+        fs.writeFileSync(connectionConfigPath, JSON.stringify(validated), { mode: 0o600 })
+    } catch (error) {
+        sendLog('Não foi possível guardar a configuração pública: ' + error.message)
+    }
+}
+
+async function initializePrinterConnection() {
+    try {
+        await refreshPrinterConnection()
+    } catch (error) {
+        try {
+            connectionConfig = validPrinterConnection(JSON.parse(fs.readFileSync(connectionConfigPath, 'utf8')))
+        } catch {}
+        if (!connectionConfig) {
+            throw new Error('Não foi possível carregar a configuração da impressora. Verifique a conexão e tente novamente.')
+        }
+        sendLog('Servidor de configuração indisponível. Usando a última configuração pública salva.')
+    }
+}
+
+async function verifyUpdateChecksum(filePath, digest) {
+    const expected = /^sha256:([0-9a-f]{64})$/i.exec(String(digest || ''))?.[1]
+    if (!expected) return false
+    const actual = await new Promise((resolve, reject) => {
+        const hash = createHash('sha256')
+        const stream = fs.createReadStream(filePath)
+        stream.on('data', chunk => hash.update(chunk))
+        stream.on('error', reject)
+        stream.on('end', () => resolve(hash.digest('hex')))
+    })
+    if (actual.toLowerCase() !== expected.toLowerCase()) {
+        try { fs.unlinkSync(filePath) } catch {}
+        throw new Error('O instalador baixado falhou na verificação de integridade.')
+    }
+    return true
+}
+
+function installRequiredUpdateIfIdle() {
+    if (!mandatoryUpdateWaiting || activePrintOperations > 0 || activePrinterCycle ||
+        updateInstallScheduled || !pendingUpdate?.installerPath) return
+    installPendingUpdate()
+}
+
 function downloadUpdateFile(url, filePath, redirectCount = 0) {
     return new Promise((resolve, reject) => {
         const request = https.get(url, {
@@ -309,12 +398,14 @@ async function checkForAppUpdate() {
     })
 
     try {
+        await refreshPrinterConnection().catch(() => {})
         const release = await requestJson(
             `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases/latest`
         )
         const version = String(release?.tag_name || '').replace(/^v/i, '').trim()
 
         if (!version || compareVersions(version, app.getVersion()) <= 0) {
+            if (requiredPrinterUpdate()) throw new Error('Versão obrigatória ainda não publicada.')
             pendingUpdate = null
             return publishUpdateStatus({
                 status: 'current',
@@ -337,6 +428,13 @@ async function checkForAppUpdate() {
         const updateDir = path.join(baseDir, 'updates', version)
         const installerPath = path.join(updateDir, `iMenu-Impressora-${version}.exe`)
         const expectedSize = Number(installer.size || 0)
+        const mandatory = requiredPrinterUpdate()
+        if (mandatory && compareVersions(version, remoteUpdatePolicy.minimumVersion) < 0) {
+            throw new Error('Instalador anterior à versão mínima exigida.')
+        }
+        if (mandatory && !/^sha256:[0-9a-f]{64}$/i.test(String(installer.digest || ''))) {
+            throw new Error('Instalador obrigatório sem hash SHA-256 verificável.')
+        }
 
         publishUpdateStatus({
             status: 'available',
@@ -359,22 +457,22 @@ async function checkForAppUpdate() {
             await downloadUpdateFile(installer.browser_download_url, installerPath)
         }
 
-        pendingUpdate = {
-            version,
-            installerPath,
-        }
-
-        return publishUpdateStatus({
+        await verifyUpdateChecksum(installerPath, installer.digest)
+        pendingUpdate = { version, installerPath }
+        mandatoryUpdateWaiting = mandatory
+        const ready = publishUpdateStatus({
             status: 'ready',
             availableVersion: version,
             progress: 100,
-            message: `Versão ${version} pronta.`,
+            message: mandatory ? 'Atualização obrigatória pronta. Instalando quando a impressora estiver livre...' : `Versão ${version} pronta.`,
         })
+        installRequiredUpdateIfIdle()
+        return ready
     } catch (error) {
         return publishUpdateStatus({
             status: 'error',
             progress: null,
-            message: 'Não foi possível verificar atualizações agora.',
+            message: requiredPrinterUpdate() ? 'Atualização obrigatória indisponível. A impressão continuará funcionando.' : 'Não foi possível verificar atualizações agora.',
         })
     } finally {
         updateCheckInProgress = false
@@ -382,6 +480,9 @@ async function checkForAppUpdate() {
 }
 
 function installPendingUpdate() {
+    if (activePrinterCycle || activePrintOperations > 0) {
+        return { ok: false, status: publishUpdateStatus({ status: 'ready', message: 'Aguardando terminar a impressão em andamento.' }) }
+    }
     if (
         updateInstallScheduled ||
         isLegacyBuild() ||
@@ -412,6 +513,7 @@ function installPendingUpdate() {
             }
         )
         child.unref()
+        stopLoop()
 
         const status = publishUpdateStatus({
             status: 'installing',
@@ -468,6 +570,7 @@ function readConfig() {
 
         RECEIPT_TITLE: 'COZINHA',
         RECEIPT_FOOTER_TEXT: '',
+        RECEIPT_SHOW_ORDER_NUMBER: true,
         RECEIPT_SHOW_ORDER_TIME: true,
         RECEIPT_SHOW_CUSTOMER_NAME: true,
         RECEIPT_SHOW_CUSTOMER_PHONE: true,
@@ -550,7 +653,8 @@ function getSupabase(useServiceRole = false, authOptions = null) {
     }
     if (!authOptions && authClient) return authClient
 
-    const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    if (!connectionConfig) throw new Error('Configuração pública da impressora indisponível.')
+    const client = createClient(connectionConfig.supabaseUrl, connectionConfig.supabaseAnonKey, {
         auth: {
             storage: authStorage,
             persistSession: true,
@@ -975,6 +1079,8 @@ function getPrintCopies(config) {
 }
 
 async function printConfiguredCopies(receipts, config) {
+    activePrintOperations += 1
+    try {
     const copies = getPrintCopies(config)
     const receiptList = Array.isArray(receipts) ? receipts : [receipts]
 
@@ -994,8 +1100,11 @@ async function printConfiguredCopies(receipts, config) {
             await sleep(300)
         }
     }
+    } finally {
+        activePrintOperations -= 1
+        installRequiredUpdateIfIdle()
+    }
 }
-
 function printUsb(bytes, config) {
     return new Promise((resolve, reject) => {
         if (!config.PRINTER_NAME) {
@@ -1531,6 +1640,7 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
     const receiptFooter = String(receiptSetting('FOOTER_TEXT', ''))
         .trim()
         .slice(0, 120)
+    const showOrderNumber = receiptSetting('SHOW_ORDER_NUMBER', true) !== false
     const showOrderTime = receiptSetting('SHOW_ORDER_TIME', true) !== false
     const showCustomerName = receiptSetting('SHOW_CUSTOMER_NAME', true) !== false
     const showCustomerPhone = receiptSetting('SHOW_CUSTOMER_PHONE', true) !== false
@@ -1606,11 +1716,13 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
         text += sectionGap
     }
 
-    text += ESC.alignCenter
-    text += ESC.boldOn + receiptTextSizeCommand(orderSize)
-    text += `PEDIDO #${order.display_id}\n`
-    text += ESC.normalSize + ESC.boldOff
-    text += ESC.alignLeft
+    if (showOrderNumber) {
+        text += ESC.alignCenter
+        text += ESC.boldOn + receiptTextSizeCommand(orderSize)
+        text += `PEDIDO #${order.display_id}\n`
+        text += ESC.normalSize + ESC.boldOff
+        text += ESC.alignLeft
+    }
 
     if (scheduledLabel) {
         text += `${separator}\n`
@@ -1867,6 +1979,7 @@ async function startPrinterLoop() {
         })
 
     while (!stopPrinterLoop) {
+        activePrinterCycle = true
         let job = null
         let attempt = null
         let jobClaimed = false
@@ -1972,6 +2085,9 @@ async function startPrinterLoop() {
             }
 
             sendLog(`Erro: ${err.message}`)
+        } finally {
+            activePrinterCycle = false
+            installRequiredUpdateIfIdle()
         }
 
         if (retryDelayMs !== null) {
@@ -2338,6 +2454,30 @@ app.whenReady().then(async () => {
         } catch (error) {
             sendLog(`Não foi possível ativar a inicialização com o Windows: ${error.message}`)
         }
+    }
+
+    try {
+        await initializePrinterConnection()
+    } catch (error) {
+        dialog.showErrorBox('iMenu Impressora', error.message)
+        app.quit()
+        return
+    }
+
+    if (isLegacyBuild() && requiredPrinterUpdate()) {
+        await dialog.showMessageBox({
+            type: 'warning',
+            title: 'Atualização obrigatória',
+            message: 'Atualize o iMenu Impressora Legacy para continuar imprimindo.',
+            detail: 'Baixe e instale a versão compatível com Windows 7/8.',
+            buttons: ['Baixar instalador'],
+        })
+        const url = remoteUpdatePolicy?.downloadUrl
+        if (typeof url === 'string' && url.startsWith('https://www.imenuapp.com.br/downloads/')) {
+            await shell.openExternal(url).catch(() => {})
+        }
+        app.quit()
+        return
     }
 
     await createTray()
