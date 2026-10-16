@@ -6,7 +6,8 @@ const http = require('http')
 const https = require('https')
 const net = require('net')
 const os = require('os')
-const { exec, spawn } = require('child_process')
+const { exec, execFile, spawn } = require('child_process')
+const { createHash } = require('crypto')
 const { createClient } = require('@supabase/supabase-js')
 const { SerialPort } = require('serialport')
 const iconv = require('iconv-lite')
@@ -14,8 +15,13 @@ const iconv = require('iconv-lite')
 const baseDir = app.getPath('userData')
 const configPath = path.join(baseDir, 'config.json')
 
-const SUPABASE_URL = 'https://mjogdsnxbwhbqcoijrwt.supabase.co'
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1qb2dkc254YndoYnFjb2lqcnd0Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE2NjY4MzUsImV4cCI6MjA3NzI0MjgzNX0.S1XLgP7U9ugTXKh4YTrEvzDaroVMN0LhxWc8B3DnkII"
+const PRINTER_CONFIG_URL = process.env.IMENU_PRINTER_CONFIG_URL || 'https://www.imenuapp.com.br/api/printer/config'
+const connectionConfigPath = path.join(baseDir, 'connection-config.json')
+let connectionConfig = null
+let remoteUpdatePolicy = null
+let mandatoryUpdateWaiting = false
+let activePrintOperations = 0
+let activePrinterCycle = false
 const PRINT_API_URL = process.env.IMENU_PRINTER_API_URL || 'https://www.imenuapp.com.br/api/printer'
 const authSessionPath = path.join(baseDir, 'auth-session.json')
 const GOOGLE_AUTH_CALLBACK_HOST = '127.0.0.1'
@@ -204,6 +210,89 @@ function requestJson(url, redirectCount = 0) {
     })
 }
 
+function validPrinterConnection(data) {
+    if (!data || typeof data.supabaseUrl !== 'string' || typeof data.supabaseAnonKey !== 'string') return null
+    try {
+        const parsed = new URL(data.supabaseUrl)
+        if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return null
+        const parts = data.supabaseAnonKey.split('.')
+        const isPublic = data.supabaseAnonKey.startsWith('sb_publishable_') ||
+            (parts.length === 3 && JSON.parse(Buffer.from(parts[1], 'base64url').toString()).role === 'anon')
+        if (!isPublic) return null
+        return { supabaseUrl: parsed.origin + parsed.pathname.replace(/\/+$/, ''), supabaseAnonKey: data.supabaseAnonKey }
+    } catch {
+        return null
+    }
+}
+
+function requiredPrinterUpdate() {
+    return Boolean(remoteUpdatePolicy?.forceUpdate &&
+        /^\d+\.\d+\.\d+$/.test(remoteUpdatePolicy.minimumVersion || '') &&
+        compareVersions(app.getVersion(), remoteUpdatePolicy.minimumVersion) < 0)
+}
+
+async function refreshPrinterConnection() {
+    const url = PRINTER_CONFIG_URL + (isLegacyBuild() ? '?edition=legacy' : '')
+    const data = await withTimeout(requestJson(url), 6000, 'Tempo limite ao buscar configuração da impressora.')
+    const validated = validPrinterConnection(data)
+    if (!validated) throw new Error('Configuração pública inválida.')
+
+    // Existing sessions continue with their connection until the next launch.
+    if (!connectionConfig) connectionConfig = validated
+    const policy = data.updates
+    remoteUpdatePolicy = policy?.forceUpdate === true &&
+        typeof policy.latestVersion === 'string' && /^\d+\.\d+\.\d+$/.test(policy.latestVersion) &&
+        typeof policy.minimumVersion === 'string' && /^\d+\.\d+\.\d+$/.test(policy.minimumVersion) &&
+        compareVersions(policy.minimumVersion, policy.latestVersion) <= 0
+        ? { latestVersion: policy.latestVersion, minimumVersion: policy.minimumVersion,
+            forceUpdate: true, downloadUrl: policy.downloadUrl }
+        : null
+
+    try {
+        fs.mkdirSync(baseDir, { recursive: true })
+        fs.writeFileSync(connectionConfigPath, JSON.stringify(validated), { mode: 0o600 })
+    } catch (error) {
+        sendLog('Não foi possível guardar a configuração pública: ' + error.message)
+    }
+}
+
+async function initializePrinterConnection() {
+    try {
+        await refreshPrinterConnection()
+    } catch (error) {
+        try {
+            connectionConfig = validPrinterConnection(JSON.parse(fs.readFileSync(connectionConfigPath, 'utf8')))
+        } catch {}
+        if (!connectionConfig) {
+            throw new Error('Não foi possível carregar a configuração da impressora. Verifique a conexão e tente novamente.')
+        }
+        sendLog('Servidor de configuração indisponível. Usando a última configuração pública salva.')
+    }
+}
+
+async function verifyUpdateChecksum(filePath, digest) {
+    const expected = /^sha256:([0-9a-f]{64})$/i.exec(String(digest || ''))?.[1]
+    if (!expected) return false
+    const actual = await new Promise((resolve, reject) => {
+        const hash = createHash('sha256')
+        const stream = fs.createReadStream(filePath)
+        stream.on('data', chunk => hash.update(chunk))
+        stream.on('error', reject)
+        stream.on('end', () => resolve(hash.digest('hex')))
+    })
+    if (actual.toLowerCase() !== expected.toLowerCase()) {
+        try { fs.unlinkSync(filePath) } catch {}
+        throw new Error('O instalador baixado falhou na verificação de integridade.')
+    }
+    return true
+}
+
+function installRequiredUpdateIfIdle() {
+    if (!mandatoryUpdateWaiting || activePrintOperations > 0 || activePrinterCycle ||
+        updateInstallScheduled || !pendingUpdate?.installerPath) return
+    installPendingUpdate()
+}
+
 function downloadUpdateFile(url, filePath, redirectCount = 0) {
     return new Promise((resolve, reject) => {
         const request = https.get(url, {
@@ -309,12 +398,14 @@ async function checkForAppUpdate() {
     })
 
     try {
+        await refreshPrinterConnection().catch(() => {})
         const release = await requestJson(
             `https://api.github.com/repos/${UPDATE_REPOSITORY}/releases/latest`
         )
         const version = String(release?.tag_name || '').replace(/^v/i, '').trim()
 
         if (!version || compareVersions(version, app.getVersion()) <= 0) {
+            if (requiredPrinterUpdate()) throw new Error('Versão obrigatória ainda não publicada.')
             pendingUpdate = null
             return publishUpdateStatus({
                 status: 'current',
@@ -337,6 +428,13 @@ async function checkForAppUpdate() {
         const updateDir = path.join(baseDir, 'updates', version)
         const installerPath = path.join(updateDir, `iMenu-Impressora-${version}.exe`)
         const expectedSize = Number(installer.size || 0)
+        const mandatory = requiredPrinterUpdate()
+        if (mandatory && compareVersions(version, remoteUpdatePolicy.minimumVersion) < 0) {
+            throw new Error('Instalador anterior à versão mínima exigida.')
+        }
+        if (mandatory && !/^sha256:[0-9a-f]{64}$/i.test(String(installer.digest || ''))) {
+            throw new Error('Instalador obrigatório sem hash SHA-256 verificável.')
+        }
 
         publishUpdateStatus({
             status: 'available',
@@ -359,22 +457,22 @@ async function checkForAppUpdate() {
             await downloadUpdateFile(installer.browser_download_url, installerPath)
         }
 
-        pendingUpdate = {
-            version,
-            installerPath,
-        }
-
-        return publishUpdateStatus({
+        await verifyUpdateChecksum(installerPath, installer.digest)
+        pendingUpdate = { version, installerPath }
+        mandatoryUpdateWaiting = mandatory
+        const ready = publishUpdateStatus({
             status: 'ready',
             availableVersion: version,
             progress: 100,
-            message: `Versão ${version} pronta.`,
+            message: mandatory ? 'Atualização obrigatória pronta. Instalando quando a impressora estiver livre...' : `Versão ${version} pronta.`,
         })
+        installRequiredUpdateIfIdle()
+        return ready
     } catch (error) {
         return publishUpdateStatus({
             status: 'error',
             progress: null,
-            message: 'Não foi possível verificar atualizações agora.',
+            message: requiredPrinterUpdate() ? 'Atualização obrigatória indisponível. A impressão continuará funcionando.' : 'Não foi possível verificar atualizações agora.',
         })
     } finally {
         updateCheckInProgress = false
@@ -382,6 +480,9 @@ async function checkForAppUpdate() {
 }
 
 function installPendingUpdate() {
+    if (activePrinterCycle || activePrintOperations > 0) {
+        return { ok: false, status: publishUpdateStatus({ status: 'ready', message: 'Aguardando terminar a impressão em andamento.' }) }
+    }
     if (
         updateInstallScheduled ||
         isLegacyBuild() ||
@@ -412,6 +513,7 @@ function installPendingUpdate() {
             }
         )
         child.unref()
+        stopLoop()
 
         const status = publishUpdateStatus({
             status: 'installing',
@@ -468,6 +570,7 @@ function readConfig() {
 
         RECEIPT_TITLE: 'COZINHA',
         RECEIPT_FOOTER_TEXT: '',
+        RECEIPT_SHOW_ORDER_NUMBER: true,
         RECEIPT_SHOW_ORDER_TIME: true,
         RECEIPT_SHOW_CUSTOMER_NAME: true,
         RECEIPT_SHOW_CUSTOMER_PHONE: true,
@@ -550,9 +653,11 @@ function getSupabase(useServiceRole = false, authOptions = null) {
     }
     if (!authOptions && authClient) return authClient
 
-    const client = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+    if (!connectionConfig) throw new Error('Configuração pública da impressora indisponível.')
+    const client = createClient(connectionConfig.supabaseUrl, connectionConfig.supabaseAnonKey, {
         auth: {
             storage: authStorage,
+            storageKey: 'sb-mjogdsnxbwhbqcoijrwt-auth-token',
             persistSession: true,
             autoRefreshToken: true,
             detectSessionInUrl: false,
@@ -692,38 +797,128 @@ function normalizeComPortName(value) {
         .toUpperCase()
 }
 
-function listWindowsPrinters() {
+
+function runPrinterDiscoveryCommand(script) {
     return new Promise(resolve => {
-        const cmd = `powershell -NoProfile -Command "Get-Printer | Select-Object Name,PortName | ConvertTo-Json -Compress"`
-
-        exec(cmd, (err, stdout) => {
-            if (err) {
-                resolve([])
-                return
-            }
-
-            try {
-                const raw = String(stdout || '').trim()
-                if (!raw) {
-                    resolve([])
-                    return
-                }
-
-                const parsed = JSON.parse(raw)
-                const rows = Array.isArray(parsed) ? parsed : [parsed]
-
-                resolve(rows
-                    .map(printer => ({
-                        name: String(printer.Name || '').trim(),
-                        portName: String(printer.PortName || '').trim(),
-                        type: 'windows-printer',
-                    }))
-                    .filter(printer => printer.name))
-            } catch {
-                resolve([])
-            }
-        })
+        execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script],
+            { timeout: 10000, windowsHide: true, maxBuffer: 256 * 1024 },
+            (error, stdout) => resolve(error ? [] : String(stdout || '').split(/\r?\n/).filter(Boolean))
+        )
     })
+}
+
+function decodeWindowsName(encoded) {
+    try { return Buffer.from(encoded, 'base64').toString('utf8').trim() } catch { return '' }
+}
+
+async function listWindowsPrinters() {
+    // Get-Printer is missing on older Windows; Win32_Printer works on Windows 7.
+    const lines = await runPrinterDiscoveryCommand(
+        "$ErrorActionPreference='SilentlyContinue'; " +
+        "$printers = if (Get-Command Get-Printer -ErrorAction SilentlyContinue) { Get-Printer } else { Get-WmiObject Win32_Printer }; " +
+        "$printers | ForEach-Object { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.Name)) + '|' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.PortName)) }"
+    )
+    return lines.map(line => {
+        const [name, portName] = line.split('|')
+        const decoded = decodeWindowsName(name)
+        return decoded ? { name: decoded, portName: decodeWindowsName(portName), type: 'windows-printer' } : null
+    }).filter(Boolean)
+}
+
+async function listPairedBluetoothDevices() {
+    // Device enumeration is informational: pairing does not imply a usable print connection.
+    const lines = await runPrinterDiscoveryCommand(
+        "$ErrorActionPreference='SilentlyContinue'; " +
+        "Get-WmiObject Win32_PnPEntity | Where-Object { $_.PNPDeviceID -like 'BTHENUM*DEV_*' -or $_.PNPDeviceID -like 'BTHLEDEVICE*' } | " +
+        "ForEach-Object { if ($_.Name) { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.Name)) } }"
+    )
+    return [...new Set(lines.map(decodeWindowsName).filter(Boolean))]
+}
+
+function printerNameKey(name) {
+    return String(name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function isVirtualWindowsPrinter(name) {
+    return /^(microsoft print to pdf|microsoft xps document writer|fax|onenote|send to onenote|adobe pdf)$/i.test(String(name || '').trim())
+}
+
+function buildDiscoveredPrinters(windowsPrinters, comPorts, pairedBluetooth) {
+    const devices = []
+    const recognized = new Set()
+    const detectedPorts = [...comPorts]
+    const nameMatches = (a, b) => {
+        const left = printerNameKey(a)
+        const right = printerNameKey(b)
+        return Boolean(left && right && (left === right ||
+            (left.length >= 6 && right.includes(left)) ||
+            (right.length >= 6 && left.includes(right))))
+    }
+
+    for (const printer of windowsPrinters) {
+        if (isVirtualWindowsPrinter(printer.name)) continue
+        devices.push({
+            id: 'windows:' + printer.name,
+            name: printer.name,
+            detail: 'Instalada no Windows — USB, Bluetooth ou rede',
+            ready: true,
+            mode: 'usb',
+            printerName: printer.name,
+        })
+    }
+
+    // If Windows already has a queue for the same serial port, prefer the queue.
+    const serialPorts = detectedPorts.filter(port =>
+        !windowsPrinters.some(p =>
+            String(p.portName || '').split(',').some(n =>
+                normalizeComPortName(n) === normalizeComPortName(port.path)
+            )
+        )
+    )
+    const unmatchedPaired = pairedBluetooth.filter(name =>
+        !windowsPrinters.some(p => nameMatches(name, p.name))
+    )
+
+    for (const port of serialPorts) {
+        const friendly = String(port.friendlyName || port.manufacturer || '').trim()
+        const match = unmatchedPaired.find(name => nameMatches(friendly, name))
+        // Generic COM ports are not necessarily printers (for example COM1).
+        // Keep them available in advanced settings, not the one-click list.
+        if (!match && !/bluetooth|printer|impressora|thermal|receipt|pos/i.test(friendly)) continue
+        if (match) recognized.add(match)
+        devices.push({
+            id: 'serial:' + port.path,
+            name: match || (friendly && !/^standard serial over bluetooth link/i.test(friendly)
+                ? friendly : 'Dispositivo serial ' + port.path),
+            detail: port.path + (match ? ' — conexão Bluetooth disponível' : ' — testar para confirmar'),
+            ready: true,
+            mode: 'bluetooth',
+            comPort: port.path,
+        })
+    }
+
+    // A single explicitly identified Bluetooth serial port can be offered as a
+    // probable match. The test print, not pairing, confirms the actual route.
+    const candidates = unmatchedPaired.filter(name => !recognized.has(name))
+    const genericBluetoothPorts = devices.filter(d => d.mode === 'bluetooth' &&
+        /bluetooth/i.test(String(serialPorts.find(p => p.path === d.comPort)?.friendlyName || '')))
+    if (candidates.length === 1 && genericBluetoothPorts.length === 1) {
+        genericBluetoothPorts[0].name = candidates[0]
+        genericBluetoothPorts[0].detail += ' (conexão provável)'
+        recognized.add(candidates[0])
+    }
+
+    for (const name of unmatchedPaired) {
+        if (recognized.has(name)) continue
+        devices.push({
+            id: 'paired:' + name,
+            name,
+            detail: 'Bluetooth encontrado — ainda sem conexão de impressão',
+            ready: false,
+            mode: null,
+        })
+    }
+    return devices
 }
 
 function putSavedSelectionFirst(items, savedValue, valueKey, missingItemFactory) {
@@ -753,50 +948,35 @@ function putSavedSelectionFirst(items, savedValue, valueKey, missingItemFactory)
 
 async function detectPrinters() {
     const config = readConfig()
-    const detectedWindowsPrinters = await listWindowsPrinters()
-    const detectedComPorts = (await listComPorts()).map(port => {
+    const [detectedWindowsPrinters, serialPorts, pairedBluetooth] = await Promise.all([
+        listWindowsPrinters(),
+        listComPorts().catch(() => []),
+        listPairedBluetoothDevices(),
+    ])
+    const detectedComPorts = serialPorts.map(port => {
         const portName = normalizeComPortName(port.path)
         const matchingPrinter = detectedWindowsPrinters.find(
-            printer => normalizeComPortName(printer.portName) === portName
+            printer => String(printer.portName || '').split(',').some(name =>
+                normalizeComPortName(name) === portName
+            )
         )
-
-        if (!matchingPrinter) {
-            return port
-        }
-
-        return {
-            ...port,
-            friendlyName: matchingPrinter.name,
-        }
+        return matchingPrinter ? { ...port, friendlyName: matchingPrinter.name } : port
     })
+    const devices = buildDiscoveredPrinters(detectedWindowsPrinters, detectedComPorts, pairedBluetooth)
 
     const comPorts = putSavedSelectionFirst(
-        detectedComPorts,
-        config.PRINTER_COM_PORT,
-        'path',
+        detectedComPorts, config.PRINTER_COM_PORT, 'path',
         savedPath => ({
-            path: savedPath,
-            manufacturer: '',
+            path: savedPath, manufacturer: '',
             friendlyName: 'Salva anteriormente (não detectada agora)',
-            serialNumber: '',
-            type: 'bluetooth-or-serial',
+            serialNumber: '', type: 'bluetooth-or-serial',
         })
     )
-
     const windowsPrinters = putSavedSelectionFirst(
-        detectedWindowsPrinters,
-        config.PRINTER_NAME,
-        'name',
-        savedName => ({
-            name: savedName,
-            type: 'windows-printer',
-        })
+        detectedWindowsPrinters, config.PRINTER_NAME, 'name',
+        savedName => ({ name: savedName, type: 'windows-printer' })
     )
-
-    return {
-        comPorts,
-        windowsPrinters,
-    }
+    return { devices, comPorts, windowsPrinters }
 }
 
 function normalizePrinterText(text) {
@@ -975,6 +1155,8 @@ function getPrintCopies(config) {
 }
 
 async function printConfiguredCopies(receipts, config) {
+    activePrintOperations += 1
+    try {
     const copies = getPrintCopies(config)
     const receiptList = Array.isArray(receipts) ? receipts : [receipts]
 
@@ -994,8 +1176,11 @@ async function printConfiguredCopies(receipts, config) {
             await sleep(300)
         }
     }
+    } finally {
+        activePrintOperations -= 1
+        installRequiredUpdateIfIdle()
+    }
 }
-
 function printUsb(bytes, config) {
     return new Promise((resolve, reject) => {
         if (!config.PRINTER_NAME) {
@@ -1531,6 +1716,7 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
     const receiptFooter = String(receiptSetting('FOOTER_TEXT', ''))
         .trim()
         .slice(0, 120)
+    const showOrderNumber = receiptSetting('SHOW_ORDER_NUMBER', true) !== false
     const showOrderTime = receiptSetting('SHOW_ORDER_TIME', true) !== false
     const showCustomerName = receiptSetting('SHOW_CUSTOMER_NAME', true) !== false
     const showCustomerPhone = receiptSetting('SHOW_CUSTOMER_PHONE', true) !== false
@@ -1606,11 +1792,13 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
         text += sectionGap
     }
 
-    text += ESC.alignCenter
-    text += ESC.boldOn + receiptTextSizeCommand(orderSize)
-    text += `PEDIDO #${order.display_id}\n`
-    text += ESC.normalSize + ESC.boldOff
-    text += ESC.alignLeft
+    if (showOrderNumber) {
+        text += ESC.alignCenter
+        text += ESC.boldOn + receiptTextSizeCommand(orderSize)
+        text += `PEDIDO #${order.display_id}\n`
+        text += ESC.normalSize + ESC.boldOff
+        text += ESC.alignLeft
+    }
 
     if (scheduledLabel) {
         text += `${separator}\n`
@@ -1867,6 +2055,7 @@ async function startPrinterLoop() {
         })
 
     while (!stopPrinterLoop) {
+        activePrinterCycle = true
         let job = null
         let attempt = null
         let jobClaimed = false
@@ -1972,6 +2161,9 @@ async function startPrinterLoop() {
             }
 
             sendLog(`Erro: ${err.message}`)
+        } finally {
+            activePrinterCycle = false
+            installRequiredUpdateIfIdle()
         }
 
         if (retryDelayMs !== null) {
@@ -2340,6 +2532,30 @@ app.whenReady().then(async () => {
         }
     }
 
+    try {
+        await initializePrinterConnection()
+    } catch (error) {
+        dialog.showErrorBox('iMenu Impressora', error.message)
+        app.quit()
+        return
+    }
+
+    if (isLegacyBuild() && requiredPrinterUpdate()) {
+        await dialog.showMessageBox({
+            type: 'warning',
+            title: 'Atualização obrigatória',
+            message: 'Atualize o iMenu Impressora Legacy para continuar imprimindo.',
+            detail: 'Baixe e instale a versão compatível com Windows 7/8.',
+            buttons: ['Baixar instalador'],
+        })
+        const url = remoteUpdatePolicy?.downloadUrl
+        if (typeof url === 'string' && url.startsWith('https://www.imenuapp.com.br/downloads/')) {
+            await shell.openExternal(url).catch(() => {})
+        }
+        app.quit()
+        return
+    }
+
     await createTray()
     createWindow()
     addVersionToHelpMenu()
@@ -2438,6 +2654,17 @@ ipcMain.handle('config:save', async (_, config) => {
 
 ipcMain.handle('printers:detect', async () => {
     return await detectPrinters()
+})
+
+ipcMain.handle('printers:bluetooth-settings', async () => {
+    if (process.platform !== 'win32') throw new Error('Bluetooth settings require Windows')
+    if (isLegacyBuild()) {
+        const child = spawn('control.exe', ['bthprops.cpl'], { detached: true, stdio: 'ignore' })
+        child.unref()
+    } else {
+        await shell.openExternal('ms-settings:bluetooth')
+    }
+    return { ok: true }
 })
 
 ipcMain.handle('printer:test', async (_, config) => {

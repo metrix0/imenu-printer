@@ -1021,15 +1021,31 @@
                     </div>
                 </div>
 
-                <div class="buttonRow topActions">
-                    <button class="soft" type="button" onclick="detectPrinters()">Detectar impressoras</button>
-                    <button class="soft" type="button" onclick="testPrinter()">Teste de impressão</button>
-                    <button type="button" onclick="saveConfig()">Salvar</button>
+                <div class="field">
+                    <label for="PRINTER_DEVICE">Sua impressora</label>
+                    <select id="PRINTER_DEVICE" onchange="selectDiscoveredPrinter()">
+                        <option value="">Procurando impressoras...</option>
+                    </select>
+                    <p id="printerDiscoveryStatus" class="connectionHelp" role="status">Buscando impressoras disponíveis no Windows...</p>
+                    <div id="printerBluetoothHelp" class="hidden">
+                        <p class="connectionHelp">Se a impressora usa Bluetooth, confira o pareamento nas configurações do Windows. Se usa USB, verifique o cabo. Depois procure novamente. Não é necessário reinstalar o iMenu.</p>
+                        <div class="buttonRow">
+                            <button class="soft" type="button" onclick="openBluetoothSettings()">Abrir Bluetooth do Windows</button>
+                            <button class="soft" type="button" onclick="detectPrinters()">Verificar novamente</button>
+                        </div>
+                    </div>
                 </div>
 
+                <div class="buttonRow topActions">
+                    <button class="soft" type="button" onclick="detectPrinters()">Procurar novamente</button>
+                    <button type="button" id="printerTestButton" onclick="testPrinter()">Testar impressão</button>
+                </div>
+
+                <details id="advancedPrinterSettings">
+                    <summary>Configuração avançada (opcional)</summary>
                 <div class="field">
                     <label for="PRINTER_MODE">Tipo de conexão</label>
-                    <select id="PRINTER_MODE" onchange="updateModeVisibility(); saveConfig(); updatePrinterStatus();">
+                    <select id="PRINTER_MODE" onchange="updateModeVisibility(); manualPrinterChange(); updatePrinterStatus();">
                         <option value="bluetooth">Bluetooth</option>
                         <option value="usb">USB</option>
                         <option value="ethernet">Rede / Wi-Fi</option>
@@ -1039,7 +1055,7 @@
                 <div id="bluetoothFields">
                     <div class="field">
                         <label for="PRINTER_COM_PORT">Impressora Bluetooth</label>
-                        <select id="PRINTER_COM_PORT" onchange="saveConfig(); updatePrinterStatus();"></select>
+                        <select id="PRINTER_COM_PORT" onchange="manualPrinterChange(); updatePrinterStatus();"></select>
                         <p class="connectionHelp">Selecione a porta COM da impressora pareada no Windows.</p>
                     </div>
                 </div>
@@ -1047,7 +1063,7 @@
                 <div id="usbFields">
                     <div class="field">
                         <label for="PRINTER_NAME">Impressora USB</label>
-                        <select id="PRINTER_NAME" onchange="saveConfig(); updatePrinterStatus();"></select>
+                        <select id="PRINTER_NAME" onchange="manualPrinterChange(); updatePrinterStatus();"></select>
                     </div>
                 </div>
 
@@ -1055,15 +1071,20 @@
                     <div class="grid2">
                         <div class="field">
                             <label for="PRINTER_IP">IP da impressora</label>
-                            <input id="PRINTER_IP" placeholder="192.168.0.50" onchange="saveConfig(); updatePrinterStatus();" />
+                            <input id="PRINTER_IP" placeholder="192.168.0.50" onchange="manualPrinterChange(); updatePrinterStatus();" />
                         </div>
 
                         <div class="field">
                             <label for="PRINTER_PORT">Porta</label>
-                            <input id="PRINTER_PORT" type="number" placeholder="9100" onchange="saveConfig(); updatePrinterStatus();" />
+                            <input id="PRINTER_PORT" type="number" placeholder="9100" onchange="manualPrinterChange(); updatePrinterStatus();" />
                         </div>
                     </div>
                 </div>
+
+                    <div class="buttonRow">
+                        <button class="soft" type="button" onclick="saveConfig()">Salvar configuração avançada</button>
+                    </div>
+                </details>
 
                 <label class="checkboxOption" for="PRINT_TWO_COPIES">
                     <input id="PRINT_TWO_COPIES" type="checkbox" onchange="handleCopiesChange();" />
@@ -1123,6 +1144,73 @@
 
     let currentConfig = {}
     let currentUpdateStatus = null
+
+    let discoveredPrinters = []
+    let printerDiscoveryInProgress = false
+
+    function discoveryMessage(message) {
+        document.getElementById('printerDiscoveryStatus').textContent = message
+    }
+
+    function showPrinterBluetoothHelp(visible) {
+        document.getElementById('printerBluetoothHelp').classList.toggle('hidden', !visible)
+        document.getElementById('printerTestButton').disabled =
+            visible || !isPrinterConfigured()
+    }
+
+    function setPrinterOption(select, value, label) {
+        if (!value) return
+        if (![...select.options].some(item => item.value === value)) {
+            const option = document.createElement('option')
+            option.value = value
+            option.textContent = label || value
+            select.appendChild(option)
+        }
+        select.value = value
+    }
+
+    async function selectDiscoveredPrinter() {
+        const id = document.getElementById('PRINTER_DEVICE').value
+        const printer = discoveredPrinters.find(item => item.id === id)
+        if (!printer) {
+            showPrinterBluetoothHelp(false)
+            return
+        }
+        if (!printer.ready) {
+            showPrinterBluetoothHelp(true)
+            discoveryMessage(printer.name + ' está pareada, mas não possui uma conexão de impressão pronta. Siga a orientação abaixo.')
+            updatePrinterStatus()
+            return
+        }
+
+        const mode = document.getElementById('PRINTER_MODE')
+        mode.value = printer.mode
+        if (printer.mode === 'usb') {
+            setPrinterOption(document.getElementById('PRINTER_NAME'), printer.printerName, printer.name)
+        } else {
+            setPrinterOption(document.getElementById('PRINTER_COM_PORT'), printer.comPort, printer.name)
+        }
+        updateModeVisibility()
+        showPrinterBluetoothHelp(false)
+        await saveConfig()
+        discoveryMessage('Impressora selecionada: ' + printer.name + '. Clique em Testar impressão para confirmar.')
+    }
+
+    async function openBluetoothSettings() {
+        try {
+            await window.api.openBluetoothSettings()
+            discoveryMessage('Nas configurações do Windows, confira se a impressora tem uma conexão de impressão. Depois clique em Verificar novamente.')
+        } catch {
+            discoveryMessage('Não foi possível abrir o Bluetooth automaticamente. Abra Bluetooth nas configurações do Windows.')
+        }
+    }
+
+    function manualPrinterChange() {
+        document.getElementById('PRINTER_DEVICE').value = ''
+        showPrinterBluetoothHelp(false)
+        saveConfig().catch(() => {})
+    }
+
 
     function scrollToSection(id) {
         document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -1357,8 +1445,13 @@
         const status = document.getElementById('printerStatus')
         if (!status) return
 
-        if (isPrinterConfigured()) {
-            status.textContent = 'Impressora ativa'
+        const chosen = discoveredPrinters.find(item => item.id === document.getElementById('PRINTER_DEVICE').value)
+        if (chosen && !chosen.ready) {
+            status.textContent = 'Bluetooth precisa ser configurado'
+            status.classList.remove('active')
+            status.classList.add('inactive')
+        } else if (isPrinterConfigured()) {
+            status.textContent = 'Impressora configurada'
             status.classList.remove('inactive')
             status.classList.add('active')
         } else {
@@ -1421,48 +1514,83 @@
     }
 
     async function detectPrinters() {
+        if (printerDiscoveryInProgress) return
+        printerDiscoveryInProgress = true
+        discoveryMessage('Procurando impressoras no Windows...')
         try {
             const result = await window.api.detectPrinters()
-
             const comSelect = document.getElementById('PRINTER_COM_PORT')
-            const currentCom = comSelect.value
-            comSelect.innerHTML = ''
-
-            for (const port of result.comPorts) {
-                const opt = document.createElement('option')
-                opt.value = port.path
-                opt.textContent = `${port.path} ${port.friendlyName || port.manufacturer || ''}`
-                comSelect.appendChild(opt)
-            }
-
-            if (currentCom) {
-                comSelect.value = currentCom
-            }
-
             const printerSelect = document.getElementById('PRINTER_NAME')
-            const currentPrinter = printerSelect.value
-            printerSelect.innerHTML = ''
+            const previousCom = currentConfig.PRINTER_COM_PORT || ''
+            const previousPrinter = currentConfig.PRINTER_NAME || ''
+            comSelect.innerHTML = '<option value="">Selecione uma porta</option>'
+            printerSelect.innerHTML = '<option value="">Selecione uma impressora</option>'
 
-            for (const printer of result.windowsPrinters) {
-                const opt = document.createElement('option')
-                opt.value = printer.name
-                opt.textContent = printer.name
-                printerSelect.appendChild(opt)
+            for (const port of result.comPorts || []) {
+                const option = document.createElement('option')
+                option.value = port.path
+                option.textContent = port.friendlyName
+                    ? port.friendlyName + ' (' + port.path + ')' : port.path
+                comSelect.appendChild(option)
+            }
+            for (const printer of result.windowsPrinters || []) {
+                const option = document.createElement('option')
+                option.value = printer.name
+                option.textContent = printer.name
+                printerSelect.appendChild(option)
+            }
+            if (previousCom) setPrinterOption(comSelect, previousCom, previousCom)
+            if (previousPrinter) setPrinterOption(printerSelect, previousPrinter, previousPrinter)
+
+            discoveredPrinters = result.devices || []
+            const select = document.getElementById('PRINTER_DEVICE')
+            select.innerHTML = '<option value="">Selecione uma impressora</option>'
+            for (const printer of discoveredPrinters) {
+                const option = document.createElement('option')
+                option.value = printer.id
+                option.textContent = printer.name + ' — ' + printer.detail
+                select.appendChild(option)
             }
 
-            if (currentPrinter) {
-                printerSelect.value = currentPrinter
-            }
+            const ready = discoveredPrinters.filter(item => item.ready)
+            const saved = ready.find(item =>
+                (item.mode === 'usb' && currentConfig.PRINTER_MODE === 'usb' &&
+                    item.printerName === currentConfig.PRINTER_NAME) ||
+                (item.mode === 'bluetooth' && currentConfig.PRINTER_MODE === 'bluetooth' &&
+                    item.comPort === currentConfig.PRINTER_COM_PORT)
+            )
 
-            await saveConfig()
+            showPrinterBluetoothHelp(false)
+            if (saved) {
+                select.value = saved.id
+                discoveryMessage(saved.name + ' selecionada. Clique em Testar impressão.')
+            } else if (ready.length === 1 &&
+                !currentConfig.PRINTER_NAME && !currentConfig.PRINTER_COM_PORT &&
+                !currentConfig.PRINTER_IP) {
+                select.value = ready[0].id
+                await selectDiscoveredPrinter()
+            } else if (ready.length > 0) {
+                discoveryMessage('Encontramos ' + ready.length + ' opção(ões). Escolha sua impressora e teste.')
+            } else {
+                const paired = discoveredPrinters.filter(item => !item.ready)
+                if (paired.length === 1) {
+                    select.value = paired[0].id
+                    await selectDiscoveredPrinter()
+                } else {
+                    showPrinterBluetoothHelp(true)
+                    discoveryMessage(paired.length
+                        ? 'O Windows encontrou dispositivos Bluetooth, mas nenhuma conexão de impressão pronta. Escolha sua impressora.'
+                        : 'Não encontramos impressoras prontas. Ligue ou pareie sua impressora e clique em Procurar novamente.')
+                }
+            }
             updatePrinterStatus()
-
-            log('Impressoras detectadas.')
-        } catch (err) {
-            log('Erro ao detectar impressoras.')
+        } catch (error) {
+            discoveryMessage('Não foi possível procurar impressoras. Tente novamente.')
+            log('Falha na detecção: ' + (error?.message || String(error)))
+        } finally {
+            printerDiscoveryInProgress = false
         }
     }
-
     async function handleCopiesChange() {
         await saveConfig()
         window.dispatchEvent(new CustomEvent('imenu:copies-changed', {
@@ -1483,6 +1611,7 @@
         }
 
         updatePrinterStatus()
+        document.getElementById('printerTestButton').disabled = !isPrinterConfigured() || Boolean(discoveredPrinters.find(item => item.id === document.getElementById('PRINTER_DEVICE').value && !item.ready))
         log('Configuração salva.')
     }
 
@@ -1494,9 +1623,11 @@
 
             await window.api.testPrinter(printerConfig)
 
+            discoveryMessage('Teste enviado. Confira se o papel saiu corretamente.')
             log('Teste enviado para impressora.')
         } catch (err) {
-            log('Erro no teste de impressão.')
+            discoveryMessage('Não foi possível enviar o teste. Confira se a impressora está ligada e conectada ao Windows.')
+            log('Erro no teste de impressão: ' + (err?.message || String(err)))
         }
     }
 

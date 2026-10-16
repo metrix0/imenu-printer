@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('api', {
     selectReceiptLogo: () => ipcRenderer.invoke('receipt-logo:select'),
     getReceiptLogoPreview: imagePath => ipcRenderer.invoke('receipt-logo:preview', imagePath),
     detectPrinters: () => ipcRenderer.invoke('printers:detect'),
+    openBluetoothSettings: () => ipcRenderer.invoke('printers:bluetooth-settings'),
     testPrinter: config => ipcRenderer.invoke('printer:test', config),
     getPrintHistory: () => ipcRenderer.invoke('orders:history'),
     reprintOrder: orderId => ipcRenderer.invoke('orders:reprint', orderId),

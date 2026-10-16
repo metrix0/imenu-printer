@@ -8,6 +8,7 @@
     const VIA_SUFFIXES = [
         'TITLE',
         'FOOTER_TEXT',
+        'SHOW_ORDER_NUMBER',
         'SHOW_ORDER_TIME',
         'SHOW_CUSTOMER_NAME',
         'SHOW_CUSTOMER_PHONE',
@@ -30,6 +31,7 @@
     const DEFAULTS = {
         TITLE: 'COZINHA',
         FOOTER_TEXT: '',
+        SHOW_ORDER_NUMBER: true,
         SHOW_ORDER_TIME: true,
         SHOW_CUSTOMER_NAME: true,
         SHOW_CUSTOMER_PHONE: true,
@@ -143,6 +145,7 @@
         return {
             TITLE: title,
             FOOTER_TEXT: value(fieldId(via, 'FOOTER_TEXT')).trim().slice(0, 120),
+            SHOW_ORDER_NUMBER: checked(fieldId(via, 'SHOW_ORDER_NUMBER')),
             SHOW_ORDER_TIME: checked(fieldId(via, 'SHOW_ORDER_TIME')),
             SHOW_CUSTOMER_NAME: checked(fieldId(via, 'SHOW_CUSTOMER_NAME')),
             SHOW_CUSTOMER_PHONE: checked(fieldId(via, 'SHOW_CUSTOMER_PHONE')),
@@ -296,7 +299,9 @@
             gap()
         }
 
-        line('PEDIDO #42', `receiptPreviewBold receiptPreviewCenter ${orderClass}`)
+        if (settings.SHOW_ORDER_NUMBER) {
+            line('PEDIDO #42', `receiptPreviewBold receiptPreviewCenter ${orderClass}`)
+        }
 
         if (settings.SHOW_CUSTOMER_NAME) {
             line('Maria', 'receiptPreviewBold receiptPreviewSizeLarge')
@@ -522,6 +527,7 @@
                 </div>
 
                 <div class="receiptToggles">
+                    ${toggle(via, 'SHOW_ORDER_NUMBER', 'Número do pedido')}
                     ${toggle(via, 'SHOW_ORDER_TIME', 'Horário do pedido')}
                     ${toggle(via, 'SHOW_CUSTOMER_NAME', 'Nome do cliente')}
                     ${toggle(via, 'SHOW_CUSTOMER_PHONE', 'Telefone')}
