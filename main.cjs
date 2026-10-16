@@ -811,12 +811,48 @@ function decodeWindowsName(encoded) {
     try { return Buffer.from(encoded, 'base64').toString('utf8').trim() } catch { return '' }
 }
 
+function listWindowsPrintersPrimary() {
+    return new Promise(resolve => {
+        const cmd = 'powershell -NoProfile -Command "Get-Printer | Select-Object Name,PortName | ConvertTo-Json -Compress"'
+
+        exec(cmd, { timeout: 10000, windowsHide: true, maxBuffer: 256 * 1024 }, (err, stdout) => {
+            if (err) {
+                resolve([])
+                return
+            }
+
+            try {
+                const raw = String(stdout || '').trim()
+                if (!raw) {
+                    resolve([])
+                    return
+                }
+
+                const parsed = JSON.parse(raw)
+                const rows = Array.isArray(parsed) ? parsed : [parsed]
+
+                resolve(rows
+                    .map(printer => ({
+                        name: String(printer.Name || '').trim(),
+                        portName: String(printer.PortName || '').trim(),
+                        type: 'windows-printer',
+                    }))
+                    .filter(printer => printer.name))
+            } catch {
+                resolve([])
+            }
+        })
+    })
+}
+
 async function listWindowsPrinters() {
-    // Get-Printer is missing on older Windows; Win32_Printer works on Windows 7.
+    const primary = await listWindowsPrintersPrimary()
+    if (primary.length) return primary
+
+    // Windows printer discovery fallback for unavailable or unsuccessful Get-Printer.
     const lines = await runPrinterDiscoveryCommand(
         "$ErrorActionPreference='SilentlyContinue'; " +
-        "$printers = if (Get-Command Get-Printer -ErrorAction SilentlyContinue) { Get-Printer } else { Get-WmiObject Win32_Printer }; " +
-        "$printers | ForEach-Object { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.Name)) + '|' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.PortName)) }"
+        "Get-WmiObject Win32_Printer | ForEach-Object { [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.Name)) + '|' + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.PortName)) }"
     )
     return lines.map(line => {
         const [name, portName] = line.split('|')
