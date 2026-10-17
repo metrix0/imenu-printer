@@ -54,8 +54,9 @@ const RECEIPT_LOGO_SIZES = {
     medium: { width: 240, height: 120 },
     large: { width: RECEIPT_LOGO_MAX_WIDTH, height: RECEIPT_LOGO_MAX_HEIGHT },
 }
-const MAX_PRINT_ATTEMPTS = 3
-const FINAL_PRINT_RETRY_DELAY_MS = 30 * 1000
+const MAX_PRINT_ATTEMPTS = 5
+const LEGACY_MAX_PRINT_ATTEMPTS = 3
+const PRINT_RETRY_DELAYS_MS = [1000, 30 * 1000, 90 * 1000, 180 * 1000]
 const PRINT_OPERATION_TIMEOUT_MS = 20 * 1000
 const RECEIPT_BUILD_TIMEOUT_MS = 15 * 1000
 const UPDATE_INITIAL_DELAY_MS = 15 * 1000
@@ -1514,7 +1515,9 @@ function printBluetooth(bytes, config) {
 
 async function getNextJob(supabase, config) {
     const response = await printerApi('next_job')
-    return response.job || null
+    return response.job
+        ? { ...response.job, max_print_attempts: response.max_print_attempts }
+        : null
 }
 
 async function claimJob(supabase, id, attempt) {
@@ -2094,6 +2097,7 @@ async function startPrinterLoop() {
         activePrinterCycle = true
         let job = null
         let attempt = null
+        let maxAttempts = LEGACY_MAX_PRINT_ATTEMPTS
         let jobClaimed = false
         let printSent = false
         let retryDelayMs = null
@@ -2109,17 +2113,21 @@ async function startPrinterLoop() {
             job = await getNextJob(supabase, latestConfig)
 
             if (job) {
+                // Use five attempts only when the server explicitly supports them.
+                maxAttempts = Number(job.max_print_attempts) === MAX_PRINT_ATTEMPTS
+                    ? MAX_PRINT_ATTEMPTS
+                    : LEGACY_MAX_PRINT_ATTEMPTS
                 const previousAttempts = Number(job.attempts || 0)
 
-                if (previousAttempts >= MAX_PRINT_ATTEMPTS) {
+                if (previousAttempts >= maxAttempts) {
                     await updateJob(supabase, job.id, {
                         status: 'failed',
                         last_error:
                             job.last_error ||
-                            `Falha após ${MAX_PRINT_ATTEMPTS} tentativas de impressão.`,
+                            `Falha após ${maxAttempts} tentativas de impressão.`,
                     })
                     sendLog(
-                        `Pedido ${job.id} excedeu ${MAX_PRINT_ATTEMPTS} tentativas. Liberando próximo pedido.`
+                        `Pedido ${job.id} excedeu ${maxAttempts} tentativas. Liberando próximo pedido.`
                     )
                 } else {
                     attempt = previousAttempts + 1
@@ -2134,7 +2142,7 @@ async function startPrinterLoop() {
 
                     if (jobClaimed) {
                         sendLog(
-                            `Imprimindo pedido: ${job.id} (tentativa ${attempt}/${MAX_PRINT_ATTEMPTS})${copies === 2 ? ' (2 vias)' : ''}`
+                            `Imprimindo pedido: ${job.id} (tentativa ${attempt}/${maxAttempts})${copies === 2 ? ' (2 vias)' : ''}`
                         )
 
                         await printConfiguredCopies(receipts, latestConfig)
@@ -2162,7 +2170,7 @@ async function startPrinterLoop() {
                     attempt ?? Number(job.attempts || 0) + 1
                 const retryable = err?.printRetryable !== false
                 const exhausted =
-                    !retryable || currentAttempt >= MAX_PRINT_ATTEMPTS
+                    !retryable || currentAttempt >= maxAttempts
 
                 try {
                     const failurePatch = {
@@ -2181,10 +2189,10 @@ async function startPrinterLoop() {
                         )
                     }
 
-                    if (!exhausted && currentAttempt === MAX_PRINT_ATTEMPTS - 1) {
-                        retryDelayMs = FINAL_PRINT_RETRY_DELAY_MS
+                    if (!exhausted) {
+                        retryDelayMs = PRINT_RETRY_DELAYS_MS[currentAttempt - 1]
                         sendLog(
-                            `Falha ao imprimir ${job.id} (tentativa ${currentAttempt}/${MAX_PRINT_ATTEMPTS}). Última tentativa em 30 segundos.`
+                            `Falha ao imprimir ${job.id} (tentativa ${currentAttempt}/${maxAttempts}). Próxima tentativa em ${retryDelayMs / 1000} segundo(s).`
                         )
                     } else if (exhausted) {
                         sendLog(
@@ -2203,7 +2211,7 @@ async function startPrinterLoop() {
         }
 
         if (retryDelayMs !== null) {
-            // Preserve the existing delayed final retry even if Realtime signals.
+            // Preserve retry delays even if Realtime signals.
             await sleep(retryDelayMs)
         } else if (job && !stopPrinterLoop) {
             // Drain an existing backlog immediately; 60s polling is only for idle printers.
