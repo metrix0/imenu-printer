@@ -94,6 +94,13 @@
 
         .hidden { display: none !important; }
 
+        .bootScreen { min-height: 100vh; display: grid; place-items: center; padding: 32px 20px; }
+        .bootContent { width: min(420px, 100%); }
+        .bootMessage { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--muted); font-size: 13px; }
+        .bootSpinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--action); border-radius: 50%; animation: bootSpin .8s linear infinite; }
+        @keyframes bootSpin { to { transform: rotate(360deg); } }
+        .appVersionFooter { position: fixed; bottom: 0; left: 0; z-index: 20; padding: 8px 16px; color: var(--muted-2); background: var(--surface); border: 1px solid var(--border); border-bottom: 0; border-left: 0; border-top-right-radius: var(--radius); font-size: 11px; line-height: 1.3; pointer-events: none; }
+
         .loginScreen {
             min-height: 100vh;
             display: grid;
@@ -146,17 +153,20 @@
             display: flex;
             flex-direction: column;
             gap: 22px;
-            padding: 22px 16px 16px;
+            padding: 22px 16px 48px;
             border-right: 1px solid var(--border);
             background: var(--surface);
         }
 
         .sidebarBrand {
             display: flex;
-            align-items: center;
-            gap: 10px;
+            flex-direction: column;
+            align-items: flex-start;
+            gap: 3px;
             padding: 0 6px;
         }
+
+        .sidebarBrandVersion { color: var(--muted-2); font-size: 11px; line-height: 1.4; }
 
         .sidebarBrandLogo {
             display: block;
@@ -408,6 +418,25 @@
         }
 
         .field { margin-top: 14px; }
+        .printerPrimaryField { margin-top: 0; }
+        .printerActions { margin-top: 12px; }
+        .printerHelpPanel { margin-top: 12px; }
+        .printerHelpPanel .buttonRow { margin-top: 10px; }
+        .printerAdvanced { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
+        .printerAdvancedToggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 44px; padding: 11px 13px; border-color: var(--border); background: var(--surface-muted); color: var(--text); text-align: left; }
+        .printerAdvancedToggle:hover:not(:disabled) { border-color: var(--border); background: #e8ebee; }
+        .printerAdvancedToggle svg { flex: 0 0 auto; transition: transform 220ms ease; }
+        .printerAdvancedToggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+        .printerAdvancedContent { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows 240ms ease, opacity 200ms ease; }
+        .printerAdvancedContent.isOpen { grid-template-rows: 1fr; opacity: 1; }
+        .printerAdvancedInner { min-height: 0; overflow: hidden; }
+        .printerAdvancedInner > .field { margin-top: 16px; }
+        .printerAdvancedInner .buttonRow { margin-top: 14px; }
+        .printerCopies { margin-top: 18px; }
+        @media (prefers-reduced-motion: reduce) {
+            .bootSpinner { animation: none; }
+            .printerAdvancedToggle svg, .printerAdvancedContent { transition: none; }
+        }
 
         label {
             display: block;
@@ -628,6 +657,11 @@
             font-size: 12px;
             text-align: center;
         }
+
+        .historyPagination { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-top: 14px; color: var(--muted); font-size: 12px; }
+        .historyPageControls { display: flex; align-items: center; gap: 10px; }
+        .historyPageControls button { min-height: 34px; padding: 6px 10px; border-color: var(--border); background: white; color: var(--text); font-size: 12px; }
+        .historyPageControls button:hover:not(:disabled) { border-color: var(--border); background: var(--surface-muted); }
 
         .logsBox {
             height: 170px;
@@ -892,7 +926,16 @@
 </head>
 
 <body>
-<div id="loginScreen" class="loginScreen">
+<div id="bootScreen" class="bootScreen" role="status" aria-live="polite">
+    <div class="bootContent">
+        <div class="loginLogo">
+            <img class="brandMarkImage" src="./favicon.png" alt="iMenu" />
+            <div><h1>iMenu Impressora</h1><p>Impressão automática dos pedidos</p></div>
+        </div>
+        <p class="bootMessage"><span class="bootSpinner" aria-hidden="true"></span>Iniciando impressora...</p>
+    </div>
+</div>
+<div id="loginScreen" class="loginScreen hidden">
     <div class="loginWrap">
         <div class="loginLogo">
             <img class="brandMarkImage" src="./favicon.png" alt="iMenu" />
@@ -945,6 +988,7 @@
     <aside class="sidebar">
         <div class="sidebarBrand">
             <img class="sidebarBrandLogo" src="CombinationMarkLogo_Brand.png" alt="iMenu" />
+            <span id="sidebarBrandVersion" class="sidebarBrandVersion">Versão...</span>
         </div>
 
         <nav class="sidebarNav" aria-label="Navegação">
@@ -1011,6 +1055,14 @@
                 <div id="printHistoryList" class="printHistoryList">
                     <p class="printHistoryMessage">Carregando pedidos...</p>
                 </div>
+                <div id="printHistoryPagination" class="historyPagination hidden" aria-label="Paginação dos pedidos">
+                    <span id="historyResultCount"></span>
+                    <div class="historyPageControls">
+                        <button id="historyPrevious" type="button" onclick="changePrintHistoryPage(-1)">Anterior</button>
+                        <span id="historyPageLabel"></span>
+                        <button id="historyNext" type="button" onclick="changePrintHistoryPage(1)">Próxima</button>
+                    </div>
+                </div>
             </section>
 
             <section id="printerSection" class="card">
@@ -1021,28 +1073,32 @@
                     </div>
                 </div>
 
-                <div class="field">
+                <div class="field printerPrimaryField">
                     <label for="PRINTER_DEVICE">Sua impressora</label>
                     <select id="PRINTER_DEVICE" onchange="selectDiscoveredPrinter()">
                         <option value="">Procurando impressoras...</option>
                     </select>
                     <p id="printerDiscoveryStatus" class="connectionHelp" role="status">Buscando impressoras disponíveis no Windows...</p>
-                    <div id="printerBluetoothHelp" class="hidden">
+                </div>
+                <div class="buttonRow printerActions">
+                    <button class="soft" type="button" onclick="detectPrinters()">Procurar novamente</button>
+                    <button type="button" id="printerTestButton" onclick="testPrinter()">Testar impressão</button>
+                </div>
+                <div id="printerBluetoothHelp" class="hidden printerHelpPanel">
                         <p class="connectionHelp">Se a impressora usa Bluetooth, confira o pareamento nas configurações do Windows. Se usa USB, verifique o cabo. Depois procure novamente. Não é necessário reinstalar o iMenu.</p>
                         <div class="buttonRow">
                             <button class="soft" type="button" onclick="openBluetoothSettings()">Abrir Bluetooth do Windows</button>
                             <button class="soft" type="button" onclick="detectPrinters()">Verificar novamente</button>
                         </div>
                     </div>
-                </div>
 
-                <div class="buttonRow topActions">
-                    <button class="soft" type="button" onclick="detectPrinters()">Procurar novamente</button>
-                    <button type="button" id="printerTestButton" onclick="testPrinter()">Testar impressão</button>
-                </div>
-
-                <details id="advancedPrinterSettings">
-                    <summary>Configuração avançada (opcional)</summary>
+                <div class="printerAdvanced">
+                    <button id="advancedPrinterToggle" class="printerAdvancedToggle" type="button" aria-expanded="false" aria-controls="advancedPrinterFields" onclick="toggleAdvancedPrinterSettings()">
+                        Configuração avançada (opcional)
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+                    </button>
+                    <div id="advancedPrinterFields" class="printerAdvancedContent" aria-hidden="true" inert>
+                        <div class="printerAdvancedInner">
                 <div class="field">
                     <label for="PRINTER_MODE">Tipo de conexão</label>
                     <select id="PRINTER_MODE" onchange="updateModeVisibility(); manualPrinterChange(); updatePrinterStatus();">
@@ -1084,9 +1140,11 @@
                     <div class="buttonRow">
                         <button class="soft" type="button" onclick="saveConfig()">Salvar configuração avançada</button>
                     </div>
-                </details>
+                        </div>
+                    </div>
+                </div>
 
-                <label class="checkboxOption" for="PRINT_TWO_COPIES">
+                <label class="checkboxOption printerCopies" for="PRINT_TWO_COPIES">
                     <input id="PRINT_TWO_COPIES" type="checkbox" onchange="handleCopiesChange();" />
                     <span class="checkboxOptionText">
                         <span class="checkboxOptionTitle">Imprimir 2 vias</span>
@@ -1131,6 +1189,7 @@
         </svg>
     </button>
 </div>
+<div id="appVersionFooter" class="appVersionFooter">Versão...</div>
 
 <script>
     const fields = [
@@ -1144,6 +1203,10 @@
 
     let currentConfig = {}
     let currentUpdateStatus = null
+    const HISTORY_PAGE_SIZE = 10
+    let historyRows = []
+    let historyPage = 1
+    let historyRequestId = 0
 
     let discoveredPrinters = []
     let printerDiscoveryInProgress = false
@@ -1222,6 +1285,11 @@
         if (!label || !status) return
 
         currentUpdateStatus = status
+        if (status.currentVersion) {
+            const versionLabel = 'Versão ' + status.currentVersion
+            document.getElementById('sidebarBrandVersion').textContent = versionLabel
+            document.getElementById('appVersionFooter').textContent = versionLabel
+        }
         label.textContent = status.message || 'Atualizações automáticas ativadas.'
         if (button) {
             button.textContent = status.status === 'ready'
@@ -1296,22 +1364,31 @@
         }
     }
 
-    async function loadPrintHistory() {
+    function changePrintHistoryPage(direction) {
+        historyPage = Math.max(1, Math.min(Math.max(1, Math.ceil(historyRows.length / HISTORY_PAGE_SIZE)), historyPage + direction))
+        renderPrintHistory()
+    }
+
+    function renderPrintHistory() {
         const list = document.getElementById('printHistoryList')
-        const appScreen = document.getElementById('appScreen')
+        const pagination = document.getElementById('printHistoryPagination')
+        const pageCount = Math.max(1, Math.ceil(historyRows.length / HISTORY_PAGE_SIZE))
+        historyPage = Math.max(1, Math.min(historyPage, pageCount))
+        list.textContent = ''
+        pagination.classList.toggle('hidden', historyRows.length <= HISTORY_PAGE_SIZE)
+        if (!historyRows.length) {
+            list.innerHTML = '<p class="printHistoryMessage">Nenhum pedido recente.</p>'
+            return
+        }
+        const start = (historyPage - 1) * HISTORY_PAGE_SIZE
+        const pageRows = historyRows.slice(start, start + HISTORY_PAGE_SIZE)
+        document.getElementById('historyResultCount').textContent =
+            `${start + 1}–${start + pageRows.length} de ${historyRows.length} pedidos`
+        document.getElementById('historyPageLabel').textContent = `Página ${historyPage} de ${pageCount}`
+        document.getElementById('historyPrevious').disabled = historyPage === 1
+        document.getElementById('historyNext').disabled = historyPage === pageCount
 
-        if (!list || appScreen.classList.contains('hidden')) return
-
-        try {
-            const rows = await window.api.getPrintHistory()
-            list.textContent = ''
-
-            if (!Array.isArray(rows) || rows.length === 0) {
-                list.innerHTML = '<p class="printHistoryMessage">Nenhum pedido recente.</p>'
-                return
-            }
-
-            for (const row of rows) {
+        for (const row of pageRows) {
                 const item = document.createElement('div')
                 item.className = 'printHistoryRow'
 
@@ -1352,8 +1429,23 @@
                 }
 
                 list.appendChild(item)
-            }
+        }
+    }
+
+    async function loadPrintHistory() {
+        const list = document.getElementById('printHistoryList')
+        const appScreen = document.getElementById('appScreen')
+        if (!list || appScreen.classList.contains('hidden')) return
+
+        const requestId = ++historyRequestId
+        try {
+            const rows = await window.api.getPrintHistory()
+            if (requestId !== historyRequestId || appScreen.classList.contains('hidden')) return
+            historyRows = Array.isArray(rows) ? rows.slice(0, 50) : []
+            renderPrintHistory()
         } catch (err) {
+            if (requestId !== historyRequestId || appScreen.classList.contains('hidden')) return
+            document.getElementById('printHistoryPagination').classList.add('hidden')
             list.innerHTML = '<p class="printHistoryMessage">Não foi possível carregar o histórico agora.</p>'
         }
     }
@@ -1402,11 +1494,16 @@
     }
 
     function showLogin() {
+        document.getElementById('bootScreen').classList.add('hidden')
         document.getElementById('loginScreen').classList.remove('hidden')
         document.getElementById('appScreen').classList.add('hidden')
+        historyRequestId++
+        historyRows = []
+        historyPage = 1
     }
 
     function showApp(config) {
+        document.getElementById('bootScreen').classList.add('hidden')
         document.getElementById('loginScreen').classList.add('hidden')
         document.getElementById('appScreen').classList.remove('hidden')
 
@@ -1498,6 +1595,16 @@
 
         updateModeVisibility()
         updatePrinterStatus()
+    }
+
+    function toggleAdvancedPrinterSettings() {
+        const toggle = document.getElementById('advancedPrinterToggle')
+        const content = document.getElementById('advancedPrinterFields')
+        const isOpen = toggle.getAttribute('aria-expanded') !== 'true'
+        toggle.setAttribute('aria-expanded', String(isOpen))
+        content.setAttribute('aria-hidden', String(!isOpen))
+        content.inert = !isOpen
+        content.classList.toggle('isOpen', isOpen)
     }
 
     function updateModeVisibility() {
@@ -1704,20 +1811,24 @@
     window.setInterval(loadPrintHistory, 60000)
 
     async function init() {
-        const [config, updater, authenticated] = await Promise.all([
-            window.api.getConfig(),
-            window.api.getUpdateStatus(),
-            window.api.isAuthenticated(),
-        ])
-        updateUpdateStatus(updater)
-
-        setFormConfig(config)
-
-        if (config.RESTAURANT_ID && authenticated) {
-            showApp(config)
-            await detectPrinters()
-        } else {
+        try {
+            const [config, updater, authenticated] = await Promise.all([
+                window.api.getConfig(),
+                window.api.getUpdateStatus(),
+                window.api.isAuthenticated(),
+            ])
+            updateUpdateStatus(updater)
+            setFormConfig(config)
+            if (config.RESTAURANT_ID && authenticated) {
+                showApp(config)
+                await detectPrinters()
+            } else {
+                showLogin()
+            }
+        } catch (err) {
             showLogin()
+            document.getElementById('loginStatus').textContent =
+                'Não foi possível verificar a sessão. Confira sua conexão e tente entrar.'
         }
     }
     document.getElementById('email').addEventListener('keydown', function (event) {

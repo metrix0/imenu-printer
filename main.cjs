@@ -1546,7 +1546,7 @@ async function recoverInterruptedJobs(supabase, config) {
     }
 }
 
-async function getRecentPrintHistory(limit = 15) {
+async function getRecentPrintHistory(limit = 50) {
     if (!readConfig().RESTAURANT_ID) return []
     const response = await printerApi('history', { limit })
     return response.history || []
