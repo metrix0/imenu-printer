@@ -2567,7 +2567,15 @@ function createWindow() {
     })
 }
 
-app.whenReady().then(async () => {
+// Keep one printer process and focus its existing window on repeated launches.
+if (!app.requestSingleInstanceLock()) {
+    app.quit()
+} else {
+    app.on('second-instance', () => {
+        showMainWindow()
+    })
+
+    app.whenReady().then(async () => {
     if (process.platform === 'win32' && app.isPackaged) {
         try {
             app.setLoginItemSettings({ openAtLogin: true, path: process.execPath })
@@ -2604,7 +2612,8 @@ app.whenReady().then(async () => {
     createWindow()
     addVersionToHelpMenu()
     scheduleUpdateChecks()
-})
+    })
+}
 
 app.on('before-quit', () => {
     forceQuit = true

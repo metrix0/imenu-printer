@@ -99,7 +99,6 @@
         .bootMessage { display: flex; align-items: center; gap: 10px; margin: 0; color: var(--muted); font-size: 13px; }
         .bootSpinner { width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--action); border-radius: 50%; animation: bootSpin .8s linear infinite; }
         @keyframes bootSpin { to { transform: rotate(360deg); } }
-        .appVersionFooter { position: fixed; bottom: 0; left: 0; z-index: 20; padding: 8px 16px; color: var(--muted-2); background: var(--surface); border: 1px solid var(--border); border-bottom: 0; border-left: 0; border-top-right-radius: var(--radius); font-size: 11px; line-height: 1.3; pointer-events: none; }
 
         .loginScreen {
             min-height: 100vh;
@@ -422,7 +421,7 @@
         .printerActions { margin-top: 12px; }
         .printerHelpPanel { margin-top: 12px; }
         .printerHelpPanel .buttonRow { margin-top: 10px; }
-        .printerAdvanced { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--border); }
+        .printerAdvanced { margin-top: 12px; }
         .printerAdvancedToggle { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-height: 44px; padding: 11px 13px; border-color: var(--border); background: var(--surface-muted); color: var(--text); text-align: left; }
         .printerAdvancedToggle:hover:not(:disabled) { border-color: var(--border); background: #e8ebee; }
         .printerAdvancedToggle svg { flex: 0 0 auto; transition: transform 220ms ease; }
@@ -1189,7 +1188,6 @@
         </svg>
     </button>
 </div>
-<div id="appVersionFooter" class="appVersionFooter">Versão...</div>
 
 <script>
     const fields = [
@@ -1288,7 +1286,6 @@
         if (status.currentVersion) {
             const versionLabel = 'Versão ' + status.currentVersion
             document.getElementById('sidebarBrandVersion').textContent = versionLabel
-            document.getElementById('appVersionFooter').textContent = versionLabel
         }
         label.textContent = status.message || 'Atualizações automáticas ativadas.'
         if (button) {
