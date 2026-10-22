@@ -259,8 +259,8 @@ jobs:
               continue
             }
 
-            $exeSize = gh api "repos/metrix0/imenu/contents/public/downloads?ref=preview" --jq ".[] | select(.name == `"$fileName`") | .size" 2>$null
-            if ($LASTEXITCODE -eq 0 -and [int64]$exeSize -gt 1000000) {
+            $expectedDownloadUrl = "/downloads/iMenu%20Impressora%20Setup%20$env:VERSION.exe"
+            if ($metadata.downloadUrl -eq $expectedDownloadUrl) {
               $synced = $true
               break
             }
@@ -268,7 +268,7 @@ jobs:
 
           if (-not $synced) {
             "error=immediate sync unavailable; scheduled fallback pending" >> $env:GITHUB_OUTPUT
-            Write-Warning "iMenu preview did not publish $fileName within 6 minutes. The installer release is valid; iMenu's scheduled sync will retry it."
+            Write-Warning "iMenu preview did not publish printer download metadata within 6 minutes. The installer release is valid; iMenu's scheduled sync will retry it."
           }
           else {
             "error=" >> $env:GITHUB_OUTPUT
@@ -455,15 +455,15 @@ jobs:
               continue
             }
 
-            $exeSize = gh api "repos/metrix0/imenu/contents/public/downloads?ref=preview" --jq ".[] | select(.name == `"$legacyFileName`") | .size" 2>$null
-            if ($LASTEXITCODE -eq 0 -and [int64]$exeSize -gt 1000000) {
+            $expectedDownloadUrl = "/downloads/iMenu%20Impressora%20Legacy%20Setup%20$env:VERSION.exe"
+            if ($metadata.downloadUrl -eq $expectedDownloadUrl) {
               $published = $true
               break
             }
           }
 
           if (-not $published) {
-            throw "iMenu preview did not publish $legacyFileName within 10 minutes."
+            throw "iMenu preview did not publish legacy printer download metadata within 10 minutes."
           }
 
           "error=" >> $env:GITHUB_OUTPUT
