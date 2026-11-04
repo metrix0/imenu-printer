@@ -4,9 +4,71 @@ const os = require('node:os')
 const path = require('node:path')
 const vm = require('node:vm')
 const { test } = require('node:test')
+const { EventEmitter } = require('node:events')
 
 const mainSource = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8')
 const rendererSource = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8')
+
+function updateFixture(t) {
+    const fixture = main(t)
+    const installer = path.join(fixture.dir, 'installer.exe')
+    fs.writeFileSync(installer, 'test installer')
+    fixture.context.installerPath = installer
+    fixture.run("app.isPackaged = true; pendingUpdate = { version: '1.4.6', installerPath };")
+    return fixture
+}
+
+test('update requests NSIS restart and waits for successful installer spawn before stopping', async t => {
+    const { context, run } = updateFixture(t)
+    const child = new EventEmitter()
+    let stopped = false
+    let detached = false
+    child.unref = () => { detached = true }
+    context.stopLoop = () => { stopped = true }
+    context.mockSpawn = (_file, args, options) => {
+        assert.deepEqual(Array.from(args), ['--updated', '/S', '--force-run'])
+        assert.equal(options.detached, true)
+        return child
+    }
+    const update = context.installPendingUpdate()
+    assert.equal(stopped, false)
+    assert.equal(run('forceQuit'), false)
+    // Do not actually schedule an app quit in this isolated process test.
+    context.setTimeout = () => {}
+    child.emit('spawn')
+    assert.equal((await update).ok, true)
+    assert.equal(stopped, true)
+    assert.equal(detached, true)
+    assert.equal(run('forceQuit'), true)
+})
+
+test('failed installer spawn keeps the app running and permits another attempt', async t => {
+    const { context, run } = updateFixture(t)
+    context.mockSpawn = () => {
+        const child = new EventEmitter()
+        queueMicrotask(() => child.emit('error', new Error('ENOENT')))
+        return child
+    }
+    context.stopLoop = () => assert.fail('printing must continue after a failed spawn')
+    const result = await context.installPendingUpdate()
+    assert.equal(result.ok, false)
+    assert.equal(run('forceQuit'), false)
+    assert.equal(run('updateInstallScheduled'), false)
+})
+
+test('updater waits for printing and prevents duplicate installer launches', async t => {
+    const { context, run } = updateFixture(t)
+    context.mockSpawn = () => assert.fail('installer must not launch')
+    run('activePrintOperations = 1')
+    assert.equal((await context.installPendingUpdate()).ok, false)
+    run('activePrintOperations = 0; updateInstallScheduled = true')
+    assert.equal((await context.installPendingUpdate()).ok, false)
+})
+
+test('installer never terminates its own process tree during an update', () => {
+    const installer = fs.readFileSync(path.join(__dirname, 'build/installer.nsh'), 'utf8')
+    assert.doesNotMatch(installer, /ExecToStack[^\n]*taskkill[^\n]*\s\/T\b/i)
+})
 
 function main(t, overrides = {}) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'imenu-printer-test-'))
@@ -26,7 +88,9 @@ function main(t, overrides = {}) {
             if (name === 'serialport') return { SerialPort: { list: async () => [] } }
             if (name === '@supabase/supabase-js') return { createClient() {} }
             if (name === 'iconv-lite') return { encode: value => Buffer.from(value) }
-            if (name === 'child_process') return { ...require(name), exec: (...args) => context.mockExec(...args) }
+            if (name === 'child_process') return { ...require(name),
+                exec: (...args) => context.mockExec(...args),
+                spawn: (...args) => context.mockSpawn(...args) }
             if (name === 'fs' && overrides.fs) return overrides.fs
             return require(name)
         },
@@ -208,3 +272,4 @@ test('availability checks reuse a recent scan and rescan a changed route', async
     await context.checkPrinterAvailability({ PRINTER_MODE: 'usb', PRINTER_NAME: 'Other' })
     assert.equal(scans, 2)
 })
+

@@ -481,7 +481,7 @@ async function checkForAppUpdate() {
     }
 }
 
-function installPendingUpdate() {
+async function installPendingUpdate() {
     if (activePrinterCycle || activePrintOperations > 0) {
         return { ok: false, status: publishUpdateStatus({ status: 'ready', message: 'Aguardando terminar a impressão em andamento.' }) }
     }
@@ -507,13 +507,19 @@ function installPendingUpdate() {
     try {
         const child = spawn(
             pendingUpdate.installerPath,
-            ['/S'],
+            ['--updated', '/S', '--force-run'],
             {
                 detached: true,
                 stdio: 'ignore',
                 windowsHide: true,
             }
         )
+        // spawn errors are emitted asynchronously. Keep the current app alive
+        // unless Windows confirms that the installer process has started.
+        await new Promise((resolve, reject) => {
+            child.once('error', reject)
+            child.once('spawn', resolve)
+        })
         child.unref()
         stopLoop()
 
@@ -2853,4 +2859,5 @@ ipcMain.handle('auth:logout', async () => {
 
     return { ok: true }
 })
+
 
