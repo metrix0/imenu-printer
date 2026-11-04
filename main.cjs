@@ -863,6 +863,23 @@ async function listWindowsPrinters() {
     const primary = await listWindowsPrintersPrimary()
     if (primary.length) return primary
 
+    // Chromium queries Windows directly; locked-down Windows installations may
+    // forbid PowerShell even though the printer is installed and usable.
+    if (win && !win.isDestroyed?.() && typeof win.webContents?.getPrintersAsync === 'function') {
+        try {
+            const printers = await withTimeout(win.webContents.getPrintersAsync(), 5000,
+                'Tempo limite ao consultar impressoras do Windows.')
+            const native = printers.map(printer => ({
+                name: String(printer.name || '').trim(),
+                portName: '',
+                type: 'windows-printer',
+            })).filter(printer => printer.name)
+            if (native.length) return native
+        } catch {
+            // Retain the legacy WMI fallback when the native API is unavailable.
+        }
+    }
+
     // Windows printer discovery fallback for unavailable or unsuccessful Get-Printer.
     const lines = await runPrinterDiscoveryCommand(
         "$ErrorActionPreference='SilentlyContinue'; " +
@@ -893,6 +910,12 @@ function isVirtualWindowsPrinter(name) {
     return /^(microsoft print to pdf|microsoft xps document writer|fax|onenote(?:\b.*)?|send to onenote(?:\b.*)?|adobe pdf|anydesk printer)$/i.test(String(name || '').trim())
 }
 
+function isReceiptPrinterCandidate(name) {
+    // A name is only a suggestion, never proof of protocol compatibility.
+    // Unknown/document printers remain selectable but must be chosen explicitly.
+    return /\b(?:pos[- _]?\d+|rp[- _]?(?:printer|\d+)|mp[- _]?\d+|tm[- _][a-z0-9]+|thermal|receipt|bematech|daruma)\b|impressora t[eé]rmica/i.test(String(name || ''))
+}
+
 function buildDiscoveredPrinters(windowsPrinters, comPorts, pairedBluetooth) {
     const devices = []
     const recognized = new Set()
@@ -912,6 +935,7 @@ function buildDiscoveredPrinters(windowsPrinters, comPorts, pairedBluetooth) {
             name: printer.name,
             detail: 'Instalada no Windows — USB, Bluetooth ou rede',
             ready: true,
+            autoSelect: isReceiptPrinterCandidate(printer.name),
             mode: 'usb',
             printerName: printer.name,
         })
@@ -942,6 +966,7 @@ function buildDiscoveredPrinters(windowsPrinters, comPorts, pairedBluetooth) {
                 ? friendly : 'Dispositivo serial ' + port.path),
             detail: port.path + (match ? ' — conexão Bluetooth disponível' : ' — testar para confirmar'),
             ready: true,
+            autoSelect: isReceiptPrinterCandidate(match || friendly),
             mode: 'bluetooth',
             comPort: port.path,
         })
@@ -2859,5 +2884,6 @@ ipcMain.handle('auth:logout', async () => {
 
     return { ok: true }
 })
+
 
 

@@ -85,11 +85,12 @@ function main(t, overrides = {}) {
         require: name => {
             if (name === 'electron') return electron
             if (name === 'ws') return class {}
-            if (name === 'serialport') return { SerialPort: { list: async () => [] } }
+            if (name === 'serialport') return { SerialPort: overrides.SerialPort || { list: async () => [] } }
             if (name === '@supabase/supabase-js') return { createClient() {} }
             if (name === 'iconv-lite') return { encode: value => Buffer.from(value) }
             if (name === 'child_process') return { ...require(name),
                 exec: (...args) => context.mockExec(...args),
+                execFile: (...args) => context.mockExecFile(...args),
                 spawn: (...args) => context.mockSpawn(...args) }
             if (name === 'fs' && overrides.fs) return overrides.fs
             return require(name)
@@ -143,6 +144,163 @@ test('saved USB and COM selections survive hydration before discovery and an unr
     assert.equal(saved.PRINTER_COM_PORT, 'COM7')
     assert.equal(saved.PRINTER_BAUD_RATE, 115200)
     assert.equal(saved.CONNECT_TIMEOUT_MS, 9000)
+})
+
+test('native Windows discovery still finds a new printer when PowerShell is blocked', async t => {
+    const { context, run } = main(t)
+    context.nativePrinters = [{ name: 'Cozinha Çafé', displayName: 'Friendly name' }]
+    run('win = { webContents: { getPrintersAsync: async () => nativePrinters } }')
+    context.mockExec = (_cmd, _options, cb) => cb(new Error('blocked'), '')
+    context.mockExecFile = (_file, _args, _options, cb) => cb(new Error('blocked'), '')
+    const printers = await context.listWindowsPrinters()
+    assert.equal(printers[0]?.name, 'Cozinha Çafé')
+})
+
+test('discovery suggests receipt printers without automatically selecting document printers', t => {
+    const { context } = main(t)
+    const devices = context.buildDiscoveredPrinters([{ name: 'EPSON L3250 Series' }, { name: 'POS-80' }], [], [])
+    assert.equal(devices.find(item => item.name === 'EPSON L3250 Series').autoSelect, false)
+    assert.equal(devices.find(item => item.name === 'POS-80').autoSelect, true)
+    assert.equal(devices.length, 2, 'document printers remain available for explicit selection')
+})
+
+test('Bluetooth pairing alone and generic serial devices cannot be automatically selected', t => {
+    const { context } = main(t)
+    const devices = context.buildDiscoveredPrinters([], [{ path: 'COM7', friendlyName: 'Standard Serial over Bluetooth link' }], ['My phone'])
+    assert.equal(devices.some(item => item.autoSelect), false)
+})
+
+test('a Windows queue and its COM port appear as one selectable printer', t => {
+    const { context } = main(t)
+    const devices = context.buildDiscoveredPrinters([{ name: 'POS-80', portName: 'COM7:' }],
+        [{ path: 'COM7', friendlyName: 'POS-80' }], ['POS-80'])
+    assert.equal(devices.length, 1)
+    assert.equal(devices[0].mode, 'usb')
+    assert.equal(devices[0].printerName, 'POS-80')
+})
+
+test('paired Bluetooth printers with no print route stay visible but cannot print', t => {
+    const { context } = main(t)
+    const devices = context.buildDiscoveredPrinters([], [], ['RP Printer'])
+    assert.equal(devices.length, 1)
+    assert.equal(devices[0].ready, false)
+    assert.equal(devices[0].mode, null)
+})
+
+test('new USB and Bluetooth devices appear on refresh without overwriting saved selections', async t => {
+    const { context } = main(t)
+    context.saveConfig({ PRINTER_MODE: 'usb', PRINTER_NAME: 'Saved printer' })
+    context.listWindowsPrinters = async () => [{ name: 'New POS-80', portName: 'USB001' }]
+    context.listComPorts = async () => [{ path: 'COM8', friendlyName: 'RP Printer' }]
+    context.listPairedBluetoothDevices = async () => ['RP Printer']
+    const result = await context.detectPrinters()
+    assert.equal(result.devices.some(item => item.printerName === 'New POS-80'), true)
+    assert.equal(result.devices.some(item => item.comPort === 'COM8'), true)
+    assert.equal(result.windowsPrinters[0].name, 'Saved printer')
+    assert.equal(context.readConfig().PRINTER_NAME, 'Saved printer')
+})
+
+test('Bluetooth writes and drains the exact receipt, then closes the port', async t => {
+    let opened, closed = false
+    let written
+    class Serial extends EventEmitter {
+        constructor(options) { super(); opened = options }
+        open(cb) { this.isOpen = true; cb() }
+        write(bytes, cb) { written = bytes; cb() }
+        drain(cb) { cb() }
+        close(cb) { this.isOpen = false; closed = true; cb() }
+    }
+    const { context } = main(t, { SerialPort: Serial })
+    const bytes = Buffer.from([27, 64, 65, 10])
+    await context.printBluetooth(bytes, { PRINTER_COM_PORT: 'COM8', PRINTER_BAUD_RATE: 115200 })
+    assert.equal(opened.path, 'COM8')
+    assert.equal(opened.baudRate, 115200)
+    assert.deepEqual(written, bytes)
+    assert.equal(closed, true)
+})
+
+for (const stage of ['open', 'write', 'drain']) {
+    test(`Bluetooth ${stage} failure is retryable only before any data was sent`, async t => {
+        let closed = false
+        class Serial extends EventEmitter {
+            open(cb) { this.isOpen = stage !== 'open'; cb(stage === 'open' ? new Error('busy') : null) }
+            write(_bytes, cb) { cb(stage === 'write' ? new Error('write failed') : null) }
+            drain(cb) { cb(new Error('drain failed')) }
+            close(cb) { this.isOpen = false; closed = true; cb() }
+        }
+        const { context } = main(t, { SerialPort: Serial })
+        await assert.rejects(context.printBluetooth(Buffer.from('receipt'), { PRINTER_COM_PORT: 'COM8' }),
+            error => error.printRetryable === (stage === 'open'))
+        assert.equal(closed, stage !== 'open')
+    })
+}
+
+test('network printing sends exact bytes over a real loopback TCP connection', async t => {
+    const net = require('node:net')
+    const chunks = []
+    let finished
+    const received = new Promise(resolve => { finished = resolve })
+    const server = net.createServer(socket => {
+        socket.on('data', bytes => chunks.push(bytes))
+        socket.on('end', finished)
+    })
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    t.after(() => new Promise(resolve => server.close(resolve)))
+    const { context } = main(t)
+    const bytes = Buffer.from([27, 64, 84, 69, 83, 84, 10])
+    await context.printEthernet(bytes, { PRINTER_IP: '127.0.0.1', PRINTER_PORT: server.address().port })
+    await received
+    assert.deepEqual(Buffer.concat(chunks), bytes)
+})
+
+test('an unreachable network printer fails safely before sending bytes', async t => {
+    const net = require('node:net')
+    const server = net.createServer()
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+    const port = server.address().port
+    await new Promise(resolve => server.close(resolve))
+    const { context } = main(t)
+    await assert.rejects(context.printEthernet(Buffer.from('receipt'), { PRINTER_IP: '127.0.0.1', PRINTER_PORT: port }),
+        error => error.code === 'ECONNREFUSED' && error.printRetryable === true)
+})
+
+test('native discovery errors fall through to legacy discovery without losing saved routes', async t => {
+    const { context, run } = main(t)
+    run('win = { webContents: { getPrintersAsync: async () => { throw new Error("unavailable") } } }')
+    context.listWindowsPrintersPrimary = async () => []
+    context.runPrinterDiscoveryCommand = async () => [Buffer.from('POS-80').toString('base64') + '|' + Buffer.from('USB001').toString('base64')]
+    const printers = await context.listWindowsPrinters()
+    assert.equal(printers[0].name, 'POS-80')
+    assert.equal(printers[0].portName, 'USB001')
+})
+
+test('PowerShell queue discovery accepts both single-object and multi-object JSON', async t => {
+    const { context } = main(t)
+    for (const output of [{ Name: 'Cozinha Çafé', PortName: 'USB001' }, [{ Name: 'POS-80', PortName: 'COM7:' }, { Name: 'Other', PortName: 'IP_192.168.1.20' }]]) {
+        context.mockExec = (_cmd, _options, cb) => cb(null, JSON.stringify(output))
+        const printers = await context.listWindowsPrintersPrimary()
+        assert.deepEqual(Array.from(printers, item => item.name), [].concat(output).map(item => item.Name))
+    }
+})
+
+test('saved virtual queues are retained without being suggested for new setups', async t => {
+    const { context } = main(t)
+    context.saveConfig({ PRINTER_MODE: 'usb', PRINTER_NAME: 'AnyDesk Printer' })
+    context.listWindowsPrinters = async () => [{ name: 'AnyDesk Printer' }]
+    context.listComPorts = async () => []
+    context.listPairedBluetoothDevices = async () => []
+    const result = await context.detectPrinters()
+    assert.equal(result.devices.length, 0)
+    assert.equal(result.windowsPrinters[0].name, 'AnyDesk Printer')
+    assert.equal(context.readConfig().PRINTER_NAME, 'AnyDesk Printer')
+})
+
+test('Windows RAW helper rejects a nonexistent queue before sending anything', { skip: process.platform !== 'win32', timeout: 30000 }, async t => {
+    const { context } = main(t)
+    context.mockExec = require('node:child_process').exec
+    await assert.rejects(context.printUsb(Buffer.from('IMENU TEST\n'), {
+        PRINTER_NAME: 'iMenu-nonexistent-QA-' + process.pid + '-' + Date.now(),
+    }), error => error.printRetryable === true && /IMENU_PRINT_NOT_SENT/.test(error.message))
 })
 
 test('virtual printer suggestions exclude AnyDesk and OneNote variants', t => {
@@ -272,4 +430,5 @@ test('availability checks reuse a recent scan and rescan a changed route', async
     await context.checkPrinterAvailability({ PRINTER_MODE: 'usb', PRINTER_NAME: 'Other' })
     assert.equal(scans, 2)
 })
+
 

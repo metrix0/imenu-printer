@@ -1696,7 +1696,7 @@
                 discoveryMessage(selectedConfig.PRINTER_MODE === 'ethernet'
                     ? 'Configuração de rede mantida. Clique em Testar impressão.'
                     : 'Impressora salva mantida. Confira a conexão e clique em Testar impressão.')
-            } else if (ready.length === 1 &&
+            } else if (ready.length === 1 && ready[0].autoSelect === true &&
                 !currentConfig.PRINTER_NAME && !currentConfig.PRINTER_COM_PORT &&
                 !currentConfig.PRINTER_IP) {
                 select.value = ready[0].id
@@ -1882,4 +1882,5 @@
 <script src="receipt-settings.js"></script>
 </body>
 </html>
+
 
