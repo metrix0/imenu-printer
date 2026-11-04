@@ -86,6 +86,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test printer reliability
+        run: node --test printer-reliability.test.cjs
+
       - name: Increment version
         shell: pwsh
         run: |
@@ -524,6 +527,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Test printer reliability
+        run: node --test printer-reliability.test.cjs
+
       - name: Check JavaScript syntax
         run: |
           node --check main.cjs
@@ -540,3 +546,4 @@ jobs:
           path: dist/**
           if-no-files-found: error
           retention-days: 14
+

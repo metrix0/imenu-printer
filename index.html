@@ -1210,6 +1210,9 @@
 
     let discoveredPrinters = []
     let printerDiscoveryInProgress = false
+    let printerSelectionRevision = 0
+    let configSaveChain = Promise.resolve()
+    let printerConnectionIssue = ''
 
     function discoveryMessage(message) {
         document.getElementById('printerDiscoveryStatus').textContent = message
@@ -1233,6 +1236,7 @@
     }
 
     async function selectDiscoveredPrinter() {
+        printerSelectionRevision++
         const id = document.getElementById('PRINTER_DEVICE').value
         const printer = discoveredPrinters.find(item => item.id === id)
         if (!printer) {
@@ -1247,6 +1251,7 @@
         }
 
         const mode = document.getElementById('PRINTER_MODE')
+        printerConnectionIssue = ''
         mode.value = printer.mode
         if (printer.mode === 'usb') {
             setPrinterOption(document.getElementById('PRINTER_NAME'), printer.printerName, printer.name)
@@ -1269,9 +1274,11 @@
     }
 
     function manualPrinterChange() {
+        printerSelectionRevision++
+        printerConnectionIssue = ''
         document.getElementById('PRINTER_DEVICE').value = ''
         showPrinterBluetoothHelp(false)
-        saveConfig().catch(() => {})
+        saveConfig().catch(error => discoveryMessage('Não foi possível salvar a impressora. Tente novamente. ' + (error?.message || '')))
     }
 
 
@@ -1357,6 +1364,7 @@
             log('Pedido enviado novamente para a impressora.')
             await loadPrintHistory()
         } catch (err) {
+            discoveryMessage(String(err?.message || err).replace(/^.*Error invoking remote method '[^']+': (?:Error: )?/, ''))
             log(`Erro ao reimprimir: ${err?.message || err}`)
         } finally {
             button.disabled = false
@@ -1543,7 +1551,11 @@
         if (!status) return
 
         const chosen = discoveredPrinters.find(item => item.id === document.getElementById('PRINTER_DEVICE').value)
-        if (chosen && !chosen.ready) {
+        if (printerConnectionIssue) {
+            status.textContent = 'Impressora indisponível'
+            status.classList.remove('active')
+            status.classList.add('inactive')
+        } else if (chosen && !chosen.ready) {
             status.textContent = 'Bluetooth precisa ser configurado'
             status.classList.remove('active')
             status.classList.add('inactive')
@@ -1568,15 +1580,16 @@
             config[field] = el.type === 'checkbox' ? el.checked : el.value
         }
 
-        config.PRINTER_BAUD_RATE = 9600
+        config.PRINTER_BAUD_RATE = Number(currentConfig.PRINTER_BAUD_RATE || 9600)
         config.PRINTER_PORT = Number(config.PRINTER_PORT || 9100)
-        config.POLL_EVERY_MS = 60000
-        config.CONNECT_TIMEOUT_MS = 5000
+        config.POLL_EVERY_MS = Number(currentConfig.POLL_EVERY_MS || 60000)
+        config.CONNECT_TIMEOUT_MS = Number(currentConfig.CONNECT_TIMEOUT_MS || 5000)
 
         return config
     }
 
     function setFormConfig(config) {
+        printerSelectionRevision++
         currentConfig = config
 
         for (const field of fields) {
@@ -1589,6 +1602,11 @@
             }
 
             if (config[field] !== undefined && config[field] !== null) {
+                // HTML selects discard values that have no option yet. Restore
+                // saved routes before discovery so unrelated edits cannot erase them.
+                if (field === 'PRINTER_NAME' || field === 'PRINTER_COM_PORT') {
+                    setPrinterOption(el, config[field], config[field])
+                }
                 el.value = config[field]
             }
         }
@@ -1623,13 +1641,15 @@
     async function detectPrinters() {
         if (printerDiscoveryInProgress) return
         printerDiscoveryInProgress = true
+        const revision = printerSelectionRevision
         discoveryMessage('Procurando impressoras no Windows...')
         try {
             const result = await window.api.detectPrinters()
+            if (revision !== printerSelectionRevision) return
             const comSelect = document.getElementById('PRINTER_COM_PORT')
             const printerSelect = document.getElementById('PRINTER_NAME')
-            const previousCom = currentConfig.PRINTER_COM_PORT || ''
-            const previousPrinter = currentConfig.PRINTER_NAME || ''
+            const previousCom = comSelect.value || currentConfig.PRINTER_COM_PORT || ''
+            const previousPrinter = printerSelect.value || currentConfig.PRINTER_NAME || ''
             comSelect.innerHTML = '<option value="">Selecione uma porta</option>'
             printerSelect.innerHTML = '<option value="">Selecione uma impressora</option>'
 
@@ -1660,17 +1680,22 @@
             }
 
             const ready = discoveredPrinters.filter(item => item.ready)
+            const selectedConfig = getFormConfig()
             const saved = ready.find(item =>
-                (item.mode === 'usb' && currentConfig.PRINTER_MODE === 'usb' &&
-                    item.printerName === currentConfig.PRINTER_NAME) ||
-                (item.mode === 'bluetooth' && currentConfig.PRINTER_MODE === 'bluetooth' &&
-                    item.comPort === currentConfig.PRINTER_COM_PORT)
+                (item.mode === 'usb' && selectedConfig.PRINTER_MODE === 'usb' &&
+                    item.printerName === selectedConfig.PRINTER_NAME) ||
+                (item.mode === 'bluetooth' && selectedConfig.PRINTER_MODE === 'bluetooth' &&
+                    item.comPort === selectedConfig.PRINTER_COM_PORT)
             )
 
             showPrinterBluetoothHelp(false)
             if (saved) {
                 select.value = saved.id
                 discoveryMessage(saved.name + ' selecionada. Clique em Testar impressão.')
+            } else if (isPrinterConfigured()) {
+                discoveryMessage(selectedConfig.PRINTER_MODE === 'ethernet'
+                    ? 'Configuração de rede mantida. Clique em Testar impressão.'
+                    : 'Impressora salva mantida. Confira a conexão e clique em Testar impressão.')
             } else if (ready.length === 1 &&
                 !currentConfig.PRINTER_NAME && !currentConfig.PRINTER_COM_PORT &&
                 !currentConfig.PRINTER_IP) {
@@ -1707,19 +1732,17 @@
         }))
     }
 
-    async function saveConfig() {
+    function saveConfig() {
         const printerConfig = getFormConfig()
-
-        await window.api.saveConfig(printerConfig)
-
-        currentConfig = {
-            ...currentConfig,
-            ...printerConfig,
-        }
-
-        updatePrinterStatus()
-        document.getElementById('printerTestButton').disabled = !isPrinterConfigured() || Boolean(discoveredPrinters.find(item => item.id === document.getElementById('PRINTER_DEVICE').value && !item.ready))
-        log('Configuração salva.')
+        const pending = configSaveChain.then(async () => {
+            await window.api.saveConfig(printerConfig)
+            currentConfig = { ...currentConfig, ...printerConfig }
+            updatePrinterStatus()
+            document.getElementById('printerTestButton').disabled = !isPrinterConfigured() || Boolean(discoveredPrinters.find(item => item.id === document.getElementById('PRINTER_DEVICE').value && !item.ready))
+            log('Configuração salva.')
+        })
+        configSaveChain = pending.catch(() => {})
+        return pending
     }
 
     async function testPrinter() {
@@ -1730,10 +1753,12 @@
 
             await window.api.testPrinter(printerConfig)
 
+            printerConnectionIssue = ''
+            updatePrinterStatus()
             discoveryMessage('Teste enviado. Confira se o papel saiu corretamente.')
             log('Teste enviado para impressora.')
         } catch (err) {
-            discoveryMessage('Não foi possível enviar o teste. Confira se a impressora está ligada e conectada ao Windows.')
+            discoveryMessage(String(err?.message || err).replace(/^.*Error invoking remote method '[^']+': (?:Error: )?/, ''))
             log('Erro no teste de impressão: ' + (err?.message || String(err)))
         }
     }
@@ -1798,6 +1823,15 @@
 
     window.api.onLog(message => {
         log(message)
+        if (String(message).startsWith('Aguardando impressora:')) {
+            printerConnectionIssue = String(message).slice('Aguardando impressora: '.length)
+            discoveryMessage(printerConnectionIssue)
+            updatePrinterStatus()
+        } else if (message === 'Impressora disponível. Retomando a fila.') {
+            printerConnectionIssue = ''
+            discoveryMessage('Impressora configurada. A fila foi retomada.')
+            updatePrinterStatus()
+        }
         if (/^(Impresso:|Reimpresso |Pedido .* falhou|Fila recuperada:)/.test(String(message))) {
             loadPrintHistory()
         }
@@ -1848,3 +1882,4 @@
 <script src="receipt-settings.js"></script>
 </body>
 </html>
+

@@ -68,6 +68,7 @@ let updateCheckInProgress = false
 let pendingUpdate = null
 let updateInstallScheduled = false
 const receiptLogoCache = new Map()
+let printerAvailabilityCache = null
 let updateState = {
     status: 'idle',
     currentVersion: app.getVersion(),
@@ -613,7 +614,13 @@ function readConfig() {
 
 function saveConfig(config) {
     fs.mkdirSync(baseDir, { recursive: true })
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2))
+    const temporaryPath = configPath + '.tmp'
+    try {
+        fs.writeFileSync(temporaryPath, JSON.stringify(config, null, 2))
+        fs.renameSync(temporaryPath, configPath)
+    } finally {
+        if (fs.existsSync(temporaryPath)) fs.unlinkSync(temporaryPath)
+    }
 }
 
 const authStorage = {
@@ -877,7 +884,7 @@ function printerNameKey(name) {
 }
 
 function isVirtualWindowsPrinter(name) {
-    return /^(microsoft print to pdf|microsoft xps document writer|fax|onenote|send to onenote|adobe pdf)$/i.test(String(name || '').trim())
+    return /^(microsoft print to pdf|microsoft xps document writer|fax|onenote(?:\b.*)?|send to onenote(?:\b.*)?|adobe pdf|anydesk printer)$/i.test(String(name || '').trim())
 }
 
 function buildDiscoveredPrinters(windowsPrinters, comPorts, pairedBluetooth) {
@@ -984,6 +991,7 @@ function putSavedSelectionFirst(items, savedValue, valueKey, missingItemFactory)
 }
 
 async function detectPrinters() {
+    printerAvailabilityCache = null
     const config = readConfig()
     const [detectedWindowsPrinters, serialPorts, pairedBluetooth] = await Promise.all([
         listWindowsPrinters(),
@@ -1014,6 +1022,54 @@ async function detectPrinters() {
         savedName => ({ name: savedName, type: 'windows-printer' })
     )
     return { devices, comPorts, windowsPrinters }
+}
+
+function printerSetupError(message) {
+    const error = createOperationError(message)
+    error.printerUnavailable = true
+    return error
+}
+
+function validatePrinterConfiguration(config) {
+    const mode = String(config.PRINTER_MODE || '').toLowerCase()
+    if (mode === 'usb') {
+        if (!String(config.PRINTER_NAME || '').trim()) {
+            throw printerSetupError('Selecione sua impressora em Sua impressora. Se ela não aparecer, clique em Procurar novamente.')
+        }
+    } else if (mode === 'bluetooth') {
+        if (!String(config.PRINTER_COM_PORT || '').trim()) {
+            throw printerSetupError('Selecione sua impressora Bluetooth. Confira o pareamento no Windows e clique em Procurar novamente.')
+        }
+    } else if (mode === 'ethernet') {
+        const port = Number(config.PRINTER_PORT)
+        if (!String(config.PRINTER_IP || '').trim() || !Number.isInteger(port) || port < 1 || port > 65535) {
+            throw printerSetupError('Confira o IP e a porta da impressora nas configurações avançadas.')
+        }
+    } else {
+        throw printerSetupError('Selecione o tipo de conexão da impressora nas configurações avançadas.')
+    }
+}
+
+async function checkPrinterAvailability(config) {
+    validatePrinterConfiguration(config)
+    const key = JSON.stringify([config.PRINTER_MODE, config.PRINTER_NAME, config.PRINTER_COM_PORT,
+        config.PRINTER_IP, config.PRINTER_PORT])
+    if (printerAvailabilityCache?.key === key && Date.now() - printerAvailabilityCache.checkedAt < 15000) return
+    if (config.PRINTER_MODE === 'usb') {
+        const printers = await listWindowsPrinters()
+        // Enumeration may be unavailable on older Windows installations. Keep
+        // their saved route usable and let the existing transport report errors.
+        if (printers.length && !printers.some(printer => printer.name === config.PRINTER_NAME)) {
+            throw printerSetupError('A impressora salva não foi encontrada no Windows. Confira a conexão e clique em Procurar novamente.')
+        }
+    } else if (config.PRINTER_MODE === 'bluetooth') {
+        const ports = await listComPorts().catch(() => null)
+        if (ports && !ports.some(port => normalizeComPortName(port.path) === normalizeComPortName(config.PRINTER_COM_PORT))) {
+            throw printerSetupError('A conexão Bluetooth salva está indisponível. Confira o pareamento no Windows e clique em Procurar novamente.')
+        }
+    }
+    // Do not start a Windows discovery process for every receipt in a backlog.
+    printerAvailabilityCache = { key, checkedAt: Date.now() }
 }
 
 function normalizePrinterText(text) {
@@ -1173,6 +1229,7 @@ function getReceiptLogoPreviewPayload(imagePath) {
 }
 
 function printRaw(output, config) {
+    validatePrinterConfiguration(config)
     const bytes = encodePrinterData(output)
     const mode = String(config.PRINTER_MODE || 'ethernet').toLowerCase()
 
@@ -1274,8 +1331,9 @@ public class RawPrinterHelper
     [DllImport("winspool.Drv", EntryPoint="WritePrinter", SetLastError=true, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]
     public static extern bool WritePrinter(IntPtr hPrinter, IntPtr pBytes, Int32 dwCount, out Int32 dwWritten);
 
-    public static bool SendBytesToPrinter(string szPrinterName, byte[] bytes)
+    public static bool SendBytesToPrinter(string szPrinterName, byte[] bytes, out bool writeStarted)
     {
+        writeStarted = false;
         IntPtr hPrinter;
         DOCINFOA di = new DOCINFOA();
         di.pDocName = "iMenu Pedido";
@@ -1294,13 +1352,14 @@ public class RawPrinterHelper
                 Marshal.Copy(bytes, 0, pUnmanagedBytes, bytes.Length);
 
                 int dwWritten;
-                success = WritePrinter(hPrinter, pUnmanagedBytes, bytes.Length, out dwWritten);
+                writeStarted = true;
+                success = WritePrinter(hPrinter, pUnmanagedBytes, bytes.Length, out dwWritten) && dwWritten == bytes.Length;
 
                 Marshal.FreeCoTaskMem(pUnmanagedBytes);
-                EndPagePrinter(hPrinter);
+                success = EndPagePrinter(hPrinter) && success;
             }
 
-            EndDocPrinter(hPrinter);
+            success = EndDocPrinter(hPrinter) && success;
         }
 
         ClosePrinter(hPrinter);
@@ -1310,10 +1369,14 @@ public class RawPrinterHelper
 "@
 
 [byte[]]$bytes = [System.IO.File]::ReadAllBytes($filePath)
-$ok = [RawPrinterHelper]::SendBytesToPrinter($printerName, $bytes)
+$writeStarted = $false
+$ok = [RawPrinterHelper]::SendBytesToPrinter($printerName, $bytes, [ref]$writeStarted)
 
 if (-not $ok) {
-  throw "Falha ao enviar impressão RAW para $printerName"
+  if ($writeStarted) {
+    throw "IMENU_PRINT_UNCERTAIN: O Windows não confirmou o envio completo para $printerName. Confira o papel antes de reimprimir."
+  }
+  throw "IMENU_PRINT_NOT_SENT: Não foi possível abrir a fila de $printerName. Confira a impressora nas configurações do Windows."
 }
 `
 
@@ -1323,7 +1386,7 @@ if (-not $ok) {
         exec(
             `powershell -NoProfile -ExecutionPolicy Bypass -File "${psPath}"`,
             { timeout: PRINT_OPERATION_TIMEOUT_MS },
-            err => {
+            (err, _stdout, stderr) => {
                 try {
                     fs.unlinkSync(filePath)
                 } catch {}
@@ -1333,9 +1396,9 @@ if (-not $ok) {
                 } catch {}
 
                 if (err) {
-                    if (err.killed) {
-                        err.printRetryable = false
-                    }
+                    // A failed/terminated helper may already have written data.
+                    // Only an explicit pre-write failure is safe to retry.
+                    err.printRetryable = !err.killed && /IMENU_PRINT_NOT_SENT:/.test(String(stderr || err.message))
                     reject(err)
                 } else {
                     resolve()
@@ -1563,6 +1626,8 @@ async function reprintOrder(orderId) {
     if (!orderId) {
         throw new Error('Pedido inválido.')
     }
+
+    await checkPrinterAvailability(config)
 
     const order = await printerApi('reprint_check', { order_id: orderId })
     const displayId = order.display_id || String(orderId).slice(0, 8)
@@ -2068,10 +2133,12 @@ async function startPrinterLoop() {
         return
     }
 
+    if (printerLoopRunning) return
+
     printerLoopRunning = true
     stopPrinterLoop = false
 
-    sendLog('Impressora ativa.')
+    sendLog('Conectado à fila de pedidos.')
     sendLog(`Modo: ${config.PRINTER_MODE}`)
     sendLog(`Restaurante: ${config.RESTAURANT_NAME || config.RESTAURANT_ID}`)
 
@@ -2093,6 +2160,7 @@ async function startPrinterLoop() {
             if (status === 'SUBSCRIBED') wakePrinter()
         })
 
+    let lastPrinterProblem = ''
     while (!stopPrinterLoop) {
         activePrinterCycle = true
         let job = null
@@ -2108,6 +2176,12 @@ async function startPrinterLoop() {
             if (!latestConfig.RESTAURANT_ID) {
                 await sleep(2000)
                 continue
+            }
+
+            await checkPrinterAvailability(latestConfig)
+            if (lastPrinterProblem) {
+                lastPrinterProblem = ''
+                sendLog('Impressora disponível. Retomando a fila.')
             }
 
             job = await getNextJob(supabase, latestConfig)
@@ -2165,6 +2239,13 @@ async function startPrinterLoop() {
                 }
             }
         } catch (err) {
+            if (err?.printerUnavailable && !job) {
+                retryDelayMs = 5000
+                if (lastPrinterProblem !== err.message) {
+                    lastPrinterProblem = err.message
+                    sendLog(`Aguardando impressora: ${err.message} Os pedidos permanecem na fila.`)
+                }
+            }
             if (job?.id && !printSent) {
                 const currentAttempt =
                     attempt ?? Number(job.attempts || 0) + 1
@@ -2204,15 +2285,19 @@ async function startPrinterLoop() {
                 }
             }
 
-            sendLog(`Erro: ${err.message}`)
+            if (!err?.printerUnavailable || job) sendLog(`Erro: ${err.message}`)
         } finally {
             activePrinterCycle = false
             installRequiredUpdateIfIdle()
         }
 
         if (retryDelayMs !== null) {
-            // Preserve retry delays even if Realtime signals.
-            await sleep(retryDelayMs)
+            if (lastPrinterProblem) {
+                // Saving a corrected route can resume immediately.
+                await waitForPrinterWake(retryDelayMs)
+            } else {
+                await sleep(retryDelayMs)
+            }
         } else if (job && !stopPrinterLoop) {
             // Drain an existing backlog immediately; 60s polling is only for idle printers.
             await sleep(1000)
@@ -2688,6 +2773,7 @@ ipcMain.handle('config:save', async (_, config) => {
 
     saveConfig(newConfig)
 
+    wakePrinter()
     startPrinterLoop().catch(err => {
         printerLoopRunning = false
         sendLog(`Fatal: ${err.message}`)
@@ -2767,3 +2853,4 @@ ipcMain.handle('auth:logout', async () => {
 
     return { ok: true }
 })
+
