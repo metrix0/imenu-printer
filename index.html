@@ -1079,6 +1079,13 @@
                         <option value="">Procurando impressoras...</option>
                     </select>
                     <p id="printerDiscoveryStatus" class="connectionHelp" role="status">Buscando impressoras disponíveis no Windows...</p>
+                <div id="printerBluetoothHelp" class="hidden printerHelpPanel">
+                        <p class="connectionHelp">Se a impressora usa Bluetooth, confira o pareamento nas configurações do Windows. Se usa USB, verifique o cabo. Depois procure novamente. Não é necessário reinstalar o iMenu.</p>
+                        <div class="buttonRow">
+                            <button class="soft" type="button" onclick="openBluetoothSettings()">Abrir Bluetooth do Windows</button>
+                            <button class="soft" type="button" onclick="detectPrinters()">Verificar novamente</button>
+                        </div>
+                    </div>
                 </div>
                 <div class="field">
                     <label for="PRINTER_RENDER_MODE">Modo de impressão</label>
@@ -1109,13 +1116,11 @@
                     <button class="soft" type="button" onclick="detectPrinters()">Procurar novamente</button>
                     <button type="button" id="printerTestButton" onclick="testPrinter()">Testar impressão</button>
                 </div>
-                <div id="printerBluetoothHelp" class="hidden printerHelpPanel">
-                        <p class="connectionHelp">Se a impressora usa Bluetooth, confira o pareamento nas configurações do Windows. Se usa USB, verifique o cabo. Depois procure novamente. Não é necessário reinstalar o iMenu.</p>
-                        <div class="buttonRow">
-                            <button class="soft" type="button" onclick="openBluetoothSettings()">Abrir Bluetooth do Windows</button>
-                            <button class="soft" type="button" onclick="detectPrinters()">Verificar novamente</button>
-                        </div>
-                    </div>
+                <div id="windowsPrintHint" class="hidden printerHelpPanel" role="status">
+                    <p class="connectionHelp">O teste não saiu? Experimente o modo Driver do Windows.</p>
+                    <button class="soft" type="button" onclick="tryWindowsDriver()">Experimentar Driver do Windows</button>
+                </div>
+
 
                 <div class="printerAdvanced">
                     <button id="advancedPrinterToggle" class="printerAdvancedToggle" type="button" aria-expanded="false" aria-controls="advancedPrinterFields" onclick="toggleAdvancedPrinterSettings()">
@@ -1314,6 +1319,15 @@
         printerSelectionRevision++
         updateModeVisibility()
         saveWindowsPaper()
+    }
+
+    function tryWindowsDriver() {
+        if (document.getElementById('PRINTER_MODE').value !== 'usb') return
+        document.getElementById('PRINTER_RENDER_MODE').value = 'windows'
+        changePrintMode()
+        const width = document.getElementById('WINDOWS_PAPER_WIDTH_MM')
+        width.scrollIntoView({ behavior: 'smooth', block: 'center' })
+        width.focus({ preventScroll: true })
     }
 
     function saveWindowsPaper() {
@@ -1681,6 +1695,7 @@
 
     function updateModeVisibility() {
         const mode = document.getElementById('PRINTER_MODE').value
+        document.getElementById('windowsPrintHint').classList.add('hidden')
 
         const renderMode = document.getElementById('PRINTER_RENDER_MODE')
         renderMode.disabled = mode !== 'usb'
@@ -1821,6 +1836,10 @@
         } catch (err) {
             discoveryMessage(String(err?.message || err).replace(/^.*Error invoking remote method '[^']+': (?:Error: )?/, ''))
             log('Erro no teste de impressão: ' + (err?.message || String(err)))
+        } finally {
+            document.getElementById('windowsPrintHint').classList.toggle('hidden',
+                document.getElementById('PRINTER_MODE').value !== 'usb' ||
+                document.getElementById('PRINTER_RENDER_MODE').value !== 'escpos')
         }
     }
 
