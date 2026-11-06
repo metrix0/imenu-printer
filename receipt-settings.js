@@ -87,7 +87,17 @@
     }
 
     function paperColumns() {
+        const paper = windowsPreviewPaper()
+        if (paper) return Math.max(5, Math.floor((paper.width - 2 * paper.margin) / 1.7))
         return PAPER_COLUMNS[getPaperWidth()]
+    }
+
+    function windowsPreviewPaper() {
+        if (value('PRINTER_RENDER_MODE') !== 'windows') return null
+        const width = Number(value('WINDOWS_PAPER_WIDTH_MM'))
+        const margin = Number(value('WINDOWS_MARGIN_MM'))
+        return width >= 20 && width <= 216 && margin >= 0 && margin <= 10 && width - 2 * margin >= 10
+            ? { width, margin } : null
     }
 
     function localFileName(filePath) {
@@ -252,7 +262,9 @@
         if (!preview) return
 
         const settings = getViaSettings(activeVia)
-        const selectedPaperWidth = getPaperWidth()
+        const driverPaper = windowsPreviewPaper()
+        const selectedPaperWidth = driverPaper?.width || getPaperWidth()
+        document.querySelector('.receiptPaperWidthField')?.classList.toggle('hidden', Boolean(driverPaper))
         const selectedPaperColumns = paperColumns()
         const logoPreview = logoPreviewByVia[activeVia]
         const showLogo = settings.SHOW_LOGO && Boolean(settings.LOGO_PATH) && Boolean(logoPreview)
@@ -795,7 +807,9 @@
         window.addEventListener('imenu:copies-changed', event => {
             setTwoCopies(event.detail?.enabled === true)
         })
+        window.addEventListener('imenu:print-mode-changed', renderPreview)
     }
 
     mount().catch(() => {})
 })()
+

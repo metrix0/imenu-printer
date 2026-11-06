@@ -75,6 +75,7 @@ function main(t, overrides = {}) {
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }))
     const handlers = {}
     const electron = {
+        BrowserWindow: overrides.BrowserWindow,
         app: { getPath: () => dir, getVersion: () => '1.4.4', getName: () => 'iMenu Impressora',
             requestSingleInstanceLock: () => true, whenReady: () => ({ then() {} }), on() {} },
         ipcMain: { handle: (name, fn) => { handlers[name] = fn } },
@@ -430,5 +431,163 @@ test('availability checks reuse a recent scan and rescan a changed route', async
     await context.checkPrinterAvailability({ PRINTER_MODE: 'usb', PRINTER_NAME: 'Other' })
     assert.equal(scans, 2)
 })
+
+const driverConfig = {
+    PRINTER_MODE: 'usb', PRINTER_RENDER_MODE: 'windows', PRINTER_NAME: 'LABEL',
+    WINDOWS_PAPER_WIDTH_MM: 100, WINDOWS_PAPER_HEIGHT_MM: 50, WINDOWS_MARGIN_MM: 2,
+}
+
+function windowsDriver(t, options = {}) {
+    const windows = []
+    const outputs = []
+    class PrintWindow extends EventEmitter {
+        constructor(settings) {
+            super()
+            this.settings = settings
+            this.destroyed = false
+            this.webContents = new EventEmitter()
+            this.webContents.getPrintersAsync = async () => options.printers || [{ name: 'LABEL' }]
+            this.webContents.executeJavaScript = async () => true
+            this.webContents.print = (settings, callback) => {
+                outputs.push({ settings, html: this.html })
+                if (options.print) options.print(this, callback)
+                else callback(true)
+            }
+            windows.push(this)
+        }
+        async loadURL(url) {
+            this.html = decodeURIComponent(url.split(',').slice(1).join(','))
+            if (options.loadError) throw new Error('Loading failed')
+        }
+        isDestroyed() { return this.destroyed }
+        destroy() { this.destroyed = true; this.emit('closed') }
+    }
+    const fixture = main(t, { BrowserWindow: PrintWindow })
+    fixture.context.sleep = async () => {}
+    fixture.context.printRaw = () => assert.fail('Driver mode must never send RAW output')
+    return { ...fixture, windows, outputs }
+}
+
+test('driver settings default to ESC/POS without changing saved printers', t => {
+    const { context } = main(t)
+    context.saveConfig({ PRINTER_MODE: 'usb', PRINTER_NAME: 'POS-80', RECEIPT_TITLE: 'Cozinha' })
+    const config = context.readConfig()
+    assert.equal(config.PRINTER_RENDER_MODE, 'escpos')
+    assert.equal(config.PRINTER_NAME, 'POS-80')
+    assert.equal(config.RECEIPT_TITLE, 'Cozinha')
+})
+
+test('driver mode validates paper geometry and requires a named Windows queue', t => {
+    const { context } = main(t)
+    for (const patch of [{ WINDOWS_PAPER_WIDTH_MM: 0 }, { WINDOWS_PAPER_HEIGHT_MM: NaN },
+        { WINDOWS_MARGIN_MM: -1 }, { WINDOWS_PAPER_WIDTH_MM: 20, WINDOWS_MARGIN_MM: 10 },
+        { PRINTER_MODE: 'bluetooth' }, { PRINTER_NAME: '' }]) {
+        assert.throws(() => context.validatePrinterConfiguration({ ...driverConfig, ...patch }),
+            error => error.printerUnavailable === true)
+    }
+})
+
+test('driver test renders Unicode safely and submits once to the exact Windows queue', async t => {
+    const { context, windows, outputs } = windowsDriver(t)
+    const receipt = context.renderWindowsReceipt(context.printerStart() + 'Açaí <img src=x onerror=alert(1)>\n', driverConfig)
+    await context.printConfiguredCopies(receipt, driverConfig)
+    assert.equal(outputs.length, 1)
+    const { settings, html } = outputs[0]
+    assert.equal(settings.silent, true)
+    assert.equal(settings.deviceName, 'LABEL')
+    assert.equal(settings.copies, 1)
+    assert.equal(settings.pageSize.width, 100000)
+    assert.equal(settings.pageSize.height, 50000)
+    assert.match(html, /Açaí &lt;img src=x onerror=alert\(1\)&gt;/)
+    assert.doesNotMatch(html, /<script|\x1b|\x1d/)
+    assert.equal(windows[0].settings.show, false)
+    assert.equal(windows[0].settings.webPreferences.nodeIntegration, false)
+    assert.equal(windows[0].destroyed, true)
+})
+
+test('driver mode never falls back to the default printer when the selected queue is missing', async t => {
+    const { context, windows, outputs } = windowsDriver(t, { printers: [{ name: 'Other' }] })
+    await assert.rejects(context.testPrint(driverConfig), error => error.printRetryable === true)
+    assert.equal(outputs.length, 0)
+    assert.equal(windows[0].destroyed, true)
+})
+
+test('driver rendering failures are retryable before submission and clean up the hidden window', async t => {
+    const { context, windows, outputs } = windowsDriver(t, { loadError: true })
+    await assert.rejects(context.testPrint(driverConfig), error => error.printRetryable === true)
+    assert.equal(outputs.length, 0)
+    assert.equal(windows[0].destroyed, true)
+})
+
+for (const failure of ['callback', 'timeout', 'crash']) {
+    test(`driver ${failure} after submission never causes an automatic retry`, async t => {
+        const { context, windows, outputs, run } = windowsDriver(t, {
+            print(window, callback) {
+                if (failure === 'callback') callback(false, 'Print job failed')
+                if (failure === 'crash') window.webContents.emit('render-process-gone')
+            },
+        })
+        if (failure === 'timeout') {
+            context.setTimeout = (fn, ms) => setTimeout(fn, Math.min(ms, 15))
+        }
+        await assert.rejects(context.testPrint(driverConfig), error =>
+            error.printRetryable === false && /Confira o papel/.test(error.message))
+        assert.equal(outputs.length, 1)
+        assert.equal(windows[0].destroyed, true)
+        assert.equal(run('activePrintOperations'), 0)
+    })
+}
+
+test('driver two-copy printing preserves separate receipt settings and never retries a partial pair', async t => {
+    const { context, outputs } = windowsDriver(t, {
+        print(_window, callback) { callback(outputs.length === 1, 'Second copy failed') },
+    })
+    const first = context.renderWindowsReceipt('COZINHA\n', driverConfig, 1)
+    const second = context.renderWindowsReceipt('ENTREGA\n', driverConfig, 2)
+    await assert.rejects(context.printConfiguredCopies([first, second], { ...driverConfig, PRINT_TWO_COPIES: true }),
+        error => error.printRetryable === false)
+    assert.equal(outputs.length, 2)
+    assert.match(outputs[0].html, /COZINHA/)
+    assert.match(outputs[1].html, /ENTREGA/)
+})
+
+test('actual order rendering preserves totals, observations, accents and per-copy visibility in both modes', async t => {
+    const { context } = main(t)
+    const data = {
+        order: { display_id: 123, customer_name: 'João', customer_address: 'Rua Açúcar, 20',
+            created_at: '2026-11-06T12:00:00Z', subtotal_cents: 2500, total_cents: 2500, payment_method: 'pix' },
+        items: [{ id: 'i1', quantity: 1, name: 'Açaí', total_cents: 2500, observation: 'Sem açúcar' }],
+        subitems: [{ order_item_id: 'i1', name: 'Morango', quantity: 1, price_cents: 0 }],
+    }
+    const config = { ...driverConfig, RECEIPT_TITLE: 'COZINHA', RECEIPT_2_TITLE: 'ENTREGA', RECEIPT_2_SHOW_OBSERVATIONS: false }
+    const first = await context.buildReceipt(null, 'o1', config, 1, data)
+    const second = await context.buildReceipt(null, 'o1', config, 2, data)
+    for (const text of ['PEDIDO #123', 'João', 'Açaí', 'Morango', 'Sem açúcar', 'R$ 25,00', 'TOTAL']) {
+        assert.ok(first.html.includes(text), text)
+    }
+    assert.match(second.html, /ENTREGA/)
+    assert.doesNotMatch(second.html, /Sem açúcar/)
+    const raw = await context.buildReceipt(null, 'o1', { ...config, PRINTER_RENDER_MODE: 'escpos' }, 1, data)
+    assert.equal(typeof raw, 'string')
+    assert.ok(raw.startsWith(context.printerStart()))
+    assert.ok(raw.includes('Açaí'))
+})
+
+test('driver receipts reuse each copy’s configured logo without exposing local file paths', t => {
+    const { context } = main(t)
+    context.loadMonochromeReceiptLogo = (imagePath, size) => ({
+        width: size === 'small' ? 80 : 160,
+        previewDataUrl: 'data:image/png;base64,' + Buffer.from(imagePath).toString('base64'),
+    })
+    const config = { ...driverConfig, RECEIPT_SHOW_LOGO: true, RECEIPT_LOGO_PATH: 'C:\\logo.png',
+        RECEIPT_2_LOGO_PATH: 'C:\\logo2.png', RECEIPT_2_LOGO_POSITION: 'bottom', RECEIPT_2_LOGO_SIZE: 'small' }
+    const first = context.renderWindowsReceipt('FIRST\n', config, 1).html
+    const second = context.renderWindowsReceipt('SECOND\n', config, 2).html
+    assert.ok(first.indexOf('<img') < first.indexOf('FIRST'))
+    assert.ok(second.indexOf('<img') > second.indexOf('SECOND'))
+    assert.match(second, /width:10mm/)
+    assert.doesNotMatch(first + second, /C:\\/)
+})
+
 
 

@@ -572,6 +572,10 @@ function readConfig() {
         PRINTER_BAUD_RATE: 9600,
 
         PRINTER_NAME: '',
+        PRINTER_RENDER_MODE: 'escpos',
+        WINDOWS_PAPER_WIDTH_MM: 58,
+        WINDOWS_PAPER_HEIGHT_MM: 150,
+        WINDOWS_MARGIN_MM: 2,
         PRINTER_IP: '',
         PRINTER_PORT: 9100,
         PRINT_TWO_COPIES: false,
@@ -1062,6 +1066,12 @@ function printerSetupError(message) {
 }
 
 function validatePrinterConfiguration(config) {
+    if (isWindowsDriver(config)) {
+        if (config.PRINTER_MODE !== 'usb') {
+            throw printerSetupError('Para usar o Driver do Windows, selecione uma impressora instalada no Windows em Sua impressora.')
+        }
+        windowsPaperSettings(config)
+    }
     const mode = String(config.PRINTER_MODE || '').toLowerCase()
     if (mode === 'usb') {
         if (!String(config.PRINTER_NAME || '').trim()) {
@@ -1289,7 +1299,11 @@ async function printConfiguredCopies(receipts, config) {
         const receipt = receiptList[Math.min(copy - 1, receiptList.length - 1)]
 
         try {
-            await printRaw(receipt, config)
+            if (isWindowsDriver(config)) {
+                await printWindowsReceipt(receipt, config)
+            } else {
+                await printRaw(receipt, config)
+            }
         } catch (error) {
             if (copy > 1 && error && typeof error === 'object') {
                 error.printRetryable = false
@@ -1306,6 +1320,144 @@ async function printConfiguredCopies(receipts, config) {
         installRequiredUpdateIfIdle()
     }
 }
+function isWindowsDriver(config) {
+    return config.PRINTER_RENDER_MODE === 'windows'
+}
+
+function windowsPaperSettings(config) {
+    const width = Number(config.WINDOWS_PAPER_WIDTH_MM ?? config.RECEIPT_PAPER_WIDTH ?? 58)
+    const height = Number(config.WINDOWS_PAPER_HEIGHT_MM ?? 150)
+    const margin = Number(config.WINDOWS_MARGIN_MM ?? 2)
+    if (!Number.isFinite(width) || width < 20 || width > 216 ||
+        !Number.isFinite(height) || height < 20 || height > 2000 ||
+        !Number.isFinite(margin) || margin < 0 || margin > 10 ||
+        width - 2 * margin < 10 || height - 2 * margin < 10) {
+        throw printerSetupError('Confira o tamanho do papel: largura de 20 a 216 mm, altura de 20 a 2000 mm e margens de 0 a 10 mm, deixando ao menos 10 mm para impressão.')
+    }
+    return { width, height, margin }
+}
+
+function windowsPaperColumns(config) {
+    const { width, margin } = windowsPaperSettings(config)
+    return Math.max(5, Math.floor((width - 2 * margin) / 1.7))
+}
+
+function renderWindowsReceipt(text, config, via = 1) {
+    const { width, height, margin } = windowsPaperSettings(config)
+    const escape = value => String(value).replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[char]))
+    // Render the same Unicode receipt and formatting used by ESC/POS, before encoding.
+    const tokens = [...new Set(Object.values(ESC))].sort((a, b) => b.length - a.length)
+    const pattern = tokens.map(token => token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')
+    const parts = String(text).split(new RegExp('(' + pattern + '|\\n)', 'g'))
+    const lines = []
+    let spans = []
+    let bold = false
+    let size = 'normal'
+    let centered = false
+    let lineSize = 'normal'
+    let lineCentered = false
+    for (const part of parts) {
+        if (!part) continue
+        if (part === '\n') {
+            lines.push(`<div class="line ${lineSize}${lineCentered ? ' center' : ''}">${spans.join('') || '<br>'}</div>`)
+            spans = []
+            lineSize = 'normal'
+        } else if (tokens.includes(part)) {
+            if (part === ESC.boldOn) bold = true
+            if (part === ESC.boldOff) bold = false
+            if (part === ESC.alignCenter) centered = true
+            if (part === ESC.alignLeft) centered = false
+            if (part === ESC.normalSize) size = 'normal'
+            if (part === ESC.doubleHeight) size = 'large'
+            if (part === ESC.doubleSize) size = 'extra'
+        } else {
+            const clean = part.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '')
+            if (!clean) continue
+            if (!spans.length) lineCentered = centered
+            if (size === 'extra' || (size === 'large' && lineSize !== 'extra')) lineSize = size
+            spans.push(`<span class="${size}${bold ? ' bold' : ''}">${escape(clean)}</span>`)
+        }
+    }
+    if (spans.length) lines.push(`<div class="line ${lineSize}${lineCentered ? ' center' : ''}">${spans.join('')}</div>`)
+
+    let logo = ''
+    if (getReceiptLogoSetting(config, via, 'SHOW_LOGO', false) === true) {
+        const processed = loadMonochromeReceiptLogo(
+            getReceiptLogoSetting(config, via, 'LOGO_PATH', ''),
+            getReceiptLogoSetting(config, via, 'LOGO_SIZE', 'large')
+        )
+        if (processed) logo = `<img alt="" src="${escape(processed.previewDataUrl)}" style="width:${processed.width / 8}mm;max-height:${height - 2 * margin}mm">`
+    }
+    const bottom = getReceiptLogoSetting(config, via, 'LOGO_POSITION', 'top') === 'bottom'
+    return { html: `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:">
+        <title>iMenu — Comanda</title><style>
+        @page { size: ${width}mm ${height}mm; margin: ${margin}mm; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; color: #000; background: #fff; }
+        main { width: ${width - 2 * margin}mm; font: 8pt/1.3 'Courier New', monospace; }
+        .line { white-space: pre-wrap; overflow-wrap: anywhere; orphans: 1; widows: 1; }
+        .line.large, .line.extra { line-height: 2.6; }
+        span.large { display: inline-block; transform: scaleY(2); }
+        span.extra { font-size: 2em; line-height: 1.3; }
+        .center { text-align: center; }
+        .bold { font-weight: bold; }
+        img { display: block; max-width: 100%; height: auto; object-fit: contain; margin: 2mm auto; break-inside: avoid; }
+        </style></head><body><main>${bottom ? '' : logo}${lines.join('')}${bottom ? logo : ''}</main></body></html>` }
+}
+
+async function printWindowsReceipt(receipt, config) {
+    validatePrinterConfiguration(config)
+    if (!receipt || typeof receipt.html !== 'string') {
+        throw createOperationError('Comanda inválida para o Driver do Windows.', false)
+    }
+    const { width, height, margin } = windowsPaperSettings(config)
+    let printWindow = null
+    let submitted = false
+    try {
+        printWindow = new BrowserWindow({
+            show: false,
+            webPreferences: { nodeIntegration: false, contextIsolation: true, sandbox: true, backgroundThrottling: false },
+        })
+        await withTimeout(printWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(receipt.html)),
+            PRINT_OPERATION_TIMEOUT_MS, 'Não foi possível preparar a comanda para impressão.')
+        const printers = await withTimeout(printWindow.webContents.getPrintersAsync(),
+            5000, 'Não foi possível consultar as impressoras do Windows.')
+        if (!printers.some(printer => printer.name === config.PRINTER_NAME)) {
+            throw printerSetupError('A impressora selecionada não foi encontrada no Windows. Confira a conexão e clique em Procurar novamente.')
+        }
+        await withTimeout(printWindow.webContents.executeJavaScript(`Promise.all([
+            document.fonts.ready,
+            ...Array.from(document.images, image => image.decode())
+        ]).then(() => true)`), 5000, 'Não foi possível preparar o texto e o logo da comanda.')
+        await withTimeout(new Promise((resolve, reject) => {
+            printWindow.once('closed', () => reject(new Error('Janela de impressão encerrada.')))
+            printWindow.webContents.once('render-process-gone', () => reject(new Error('O processo de impressão foi encerrado.')))
+            // From this point output may have reached the spooler: never retry automatically.
+            submitted = true
+            printWindow.webContents.print({
+                silent: true,
+                deviceName: config.PRINTER_NAME,
+                printBackground: true,
+                color: false,
+                copies: 1,
+                duplexMode: 'simplex',
+                pageSize: { width: Math.round(width * 1000), height: Math.round(height * 1000) },
+                margins: { marginType: 'custom', top: margin * 96 / 25.4, bottom: margin * 96 / 25.4,
+                    left: margin * 96 / 25.4, right: margin * 96 / 25.4 },
+            }, (success, reason) => success ? resolve() : reject(new Error(reason || 'O Windows não confirmou o envio.')))
+        }), PRINT_OPERATION_TIMEOUT_MS, 'O Windows não confirmou o envio a tempo.')
+    } catch (error) {
+        error.printRetryable = !submitted
+        if (submitted) error.message += ' Confira o papel e a fila do Windows antes de reimprimir manualmente.'
+        throw error
+    } finally {
+        if (printWindow && !printWindow.isDestroyed()) printWindow.destroy()
+    }
+}
+
 function printUsb(bytes, config) {
     return new Promise((resolve, reject) => {
         if (!config.PRINTER_NAME) {
@@ -1669,7 +1821,7 @@ async function reprintOrder(orderId) {
     const receipts = await buildConfiguredReceipts(null, orderId, config)
     await printConfiguredCopies(receipts, config)
 
-    sendLog(`Reimpresso pedido #${displayId}${copies === 2 ? ' (2 vias)' : ''}`)
+    sendLog(`Enviado novamente à impressora: #${displayId}${copies === 2 ? ' (2 vias)' : ''}`)
     return { ok: true }
 }
 
@@ -1864,7 +2016,8 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
     const paperWidth = normalizeReceiptPaperWidth(
         receiptConfig.RECEIPT_PAPER_WIDTH
     )
-    const paperColumns = receiptPaperColumns(paperWidth)
+    const paperColumns = isWindowsDriver(receiptConfig)
+        ? windowsPaperColumns(receiptConfig) : receiptPaperColumns(paperWidth)
     const textSize = normalizeReceiptTextSize(
         receiptSetting('TEXT_SIZE', 'normal'),
         'normal'
@@ -2105,6 +2258,8 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
         text += ESC.normalSize + ESC.alignLeft
     }
 
+    if (isWindowsDriver(receiptConfig)) return renderWindowsReceipt(text, receiptConfig, via)
+
     const ending = '\n\n\n' + ESC.cut
     const logoBuffer = createReceiptLogoBuffer(receiptConfig, via)
 
@@ -2261,11 +2416,11 @@ async function startPrinterLoop() {
                             })
                         } catch (statusError) {
                             sendLog(
-                                `Impresso, mas não foi possível confirmar o status do pedido ${job.id}: ${statusError.message}`
+                                `Enviado à impressora, mas não foi possível confirmar o status do pedido ${job.id}: ${statusError.message}`
                             )
                         }
 
-                        sendLog(`Impresso: ${job.id}${copies === 2 ? ' (2 vias)' : ''}`)
+                        sendLog(`Enviado à impressora: ${job.id}${copies === 2 ? ' (2 vias)' : ''}`)
                     }
                 }
             }
@@ -2359,11 +2514,12 @@ async function testPrint(config) {
         ESC.boldOn +
         'TESTE IMENU\n' +
         ESC.boldOff +
-        `Modo: ${config.PRINTER_MODE}\n` +
+        `Modo: ${isWindowsDriver(config) ? 'Driver do Windows' : config.PRINTER_MODE}\n` +
         `Hora: ${new Date().toLocaleString('pt-BR')}\n\n\n` +
         ESC.cut
 
-    await printConfiguredCopies(text, config)
+    const receipt = isWindowsDriver(config) ? renderWindowsReceipt(text, config) : text
+    await printConfiguredCopies(receipt, config)
 }
 
 async function saveRestaurantForUser(supabase, user, fallbackEmail = '') {
@@ -2802,6 +2958,7 @@ ipcMain.handle('config:save', async (_, config) => {
         ...config,
     }
 
+    if (isWindowsDriver(newConfig)) windowsPaperSettings(newConfig)
     saveConfig(newConfig)
 
     wakePrinter()
@@ -2884,6 +3041,7 @@ ipcMain.handle('auth:logout', async () => {
 
     return { ok: true }
 })
+
 
 
 

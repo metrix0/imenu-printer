@@ -1047,7 +1047,7 @@
                 <div class="cardHeader">
                     <div>
                         <h2 class="cardTitle">Pedidos recentes</h2>
-                        <p class="cardDescription">Acompanhe pedidos aguardando, imprimindo e já impressos.</p>
+                        <p class="cardDescription">Acompanhe pedidos aguardando, em envio e enviados à impressora.</p>
                     </div>
                     <button class="ghost" type="button" onclick="loadPrintHistory()">Atualizar</button>
                 </div>
@@ -1079,6 +1079,31 @@
                         <option value="">Procurando impressoras...</option>
                     </select>
                     <p id="printerDiscoveryStatus" class="connectionHelp" role="status">Buscando impressoras disponíveis no Windows...</p>
+                </div>
+                <div class="field">
+                    <label for="PRINTER_RENDER_MODE">Modo de impressão</label>
+                    <select id="PRINTER_RENDER_MODE" onchange="changePrintMode()">
+                        <option value="escpos">Impressora de comandas (ESC/POS)</option>
+                        <option value="windows">Driver do Windows (etiquetas e outras impressoras)</option>
+                    </select>
+                    <p id="windowsDriverHelp" class="connectionHelp hidden">Para usar o driver, selecione em Sua impressora uma impressora instalada no Windows.</p>
+                </div>
+                <div id="windowsPaperFields" class="hidden">
+                    <div class="grid2">
+                        <div class="field">
+                            <label for="WINDOWS_PAPER_WIDTH_MM">Largura do papel (mm)</label>
+                            <input id="WINDOWS_PAPER_WIDTH_MM" type="number" min="20" max="216" step="0.1" value="58" onchange="saveWindowsPaper()" />
+                        </div>
+                        <div class="field">
+                            <label for="WINDOWS_PAPER_HEIGHT_MM">Altura da etiqueta / página (mm)</label>
+                            <input id="WINDOWS_PAPER_HEIGHT_MM" type="number" min="20" max="2000" step="0.1" value="150" onchange="saveWindowsPaper()" />
+                        </div>
+                    </div>
+                    <div class="field">
+                        <label for="WINDOWS_MARGIN_MM">Margens (mm)</label>
+                        <input id="WINDOWS_MARGIN_MM" type="number" min="0" max="10" step="0.1" value="2" onchange="saveWindowsPaper()" />
+                        <p class="connectionHelp">Use o tamanho do papel configurado no driver do Windows. Comandas longas continuam na próxima etiqueta ou página.</p>
+                    </div>
                 </div>
                 <div class="buttonRow printerActions">
                     <button class="soft" type="button" onclick="detectPrinters()">Procurar novamente</button>
@@ -1194,6 +1219,10 @@
 <script>
     const fields = [
         'PRINTER_MODE',
+        'PRINTER_RENDER_MODE',
+        'WINDOWS_PAPER_WIDTH_MM',
+        'WINDOWS_PAPER_HEIGHT_MM',
+        'WINDOWS_MARGIN_MM',
         'PRINTER_COM_PORT',
         'PRINTER_NAME',
         'PRINTER_IP',
@@ -1279,6 +1308,31 @@
         document.getElementById('PRINTER_DEVICE').value = ''
         showPrinterBluetoothHelp(false)
         saveConfig().catch(error => discoveryMessage('Não foi possível salvar a impressora. Tente novamente. ' + (error?.message || '')))
+    }
+
+    function changePrintMode() {
+        printerSelectionRevision++
+        updateModeVisibility()
+        saveWindowsPaper()
+    }
+
+    function saveWindowsPaper() {
+        window.dispatchEvent(new CustomEvent('imenu:print-mode-changed'))
+        if (document.getElementById('PRINTER_RENDER_MODE').value === 'windows') {
+            const ids = ['WINDOWS_PAPER_WIDTH_MM', 'WINDOWS_PAPER_HEIGHT_MM', 'WINDOWS_MARGIN_MM']
+            for (const id of ids) {
+                const input = document.getElementById(id)
+                if (!input.value || !input.reportValidity()) return
+            }
+            const width = Number(document.getElementById(ids[0]).value)
+            const height = Number(document.getElementById(ids[1]).value)
+            const margin = Number(document.getElementById(ids[2]).value)
+            if (Math.min(width, height) - 2 * margin < 10) {
+                discoveryMessage('Reduza as margens para deixar ao menos 10 mm de área de impressão.')
+                return
+            }
+        }
+        saveConfig().catch(error => discoveryMessage('Não foi possível salvar o modo de impressão. ' + (error?.message || '')))
     }
 
 
@@ -1416,13 +1470,13 @@
 
                 const statusLabels = {
                     queued: 'Aguardando',
-                    printing: 'Imprimindo',
-                    printed: 'Impresso',
+                    printing: 'Enviando',
+                    printed: 'Enviado à impressora',
                     failed: 'Falhou',
                 }
                 const status = document.createElement('span')
                 status.className = `printHistoryStatus ${row.status || 'printed'}`
-                status.textContent = statusLabels[row.status] || 'Impresso'
+                status.textContent = statusLabels[row.status] || 'Enviado à impressora'
 
                 info.append(order, customer)
                 item.append(info, status)
@@ -1628,6 +1682,13 @@
     function updateModeVisibility() {
         const mode = document.getElementById('PRINTER_MODE').value
 
+        const renderMode = document.getElementById('PRINTER_RENDER_MODE')
+        renderMode.disabled = mode !== 'usb'
+        if (mode !== 'usb') renderMode.value = 'escpos'
+        document.getElementById('windowsDriverHelp').classList.toggle('hidden', mode === 'usb')
+        document.getElementById('windowsPaperFields').classList.toggle('hidden', renderMode.value !== 'windows')
+        window.dispatchEvent(new CustomEvent('imenu:print-mode-changed'))
+
         document.getElementById('bluetoothFields').style.display =
             mode === 'bluetooth' ? 'block' : 'none'
 
@@ -1832,7 +1893,7 @@
             discoveryMessage('Impressora configurada. A fila foi retomada.')
             updatePrinterStatus()
         }
-        if (/^(Impresso:|Reimpresso |Pedido .* falhou|Fila recuperada:)/.test(String(message))) {
+        if (/^(Enviado à impressora:|Enviado novamente à impressora:|Pedido .* falhou|Fila recuperada:)/.test(String(message))) {
             loadPrintHistory()
         }
     })
@@ -1882,5 +1943,6 @@
 <script src="receipt-settings.js"></script>
 </body>
 </html>
+
 
 
