@@ -1079,7 +1079,10 @@
                         <option value="">Procurando impressoras...</option>
                     </select>
                     <p id="printerDiscoveryStatus" class="connectionHelp" role="status">Buscando impressoras disponíveis no Windows...</p>
-                <div id="printerBluetoothHelp" class="hidden printerHelpPanel">
+                    <div id="windowsPrintHint" class="hidden printerHelpPanel">
+                        <button type="button" onclick="tryWindowsDriver()">Modo de Impressão: Driver do Windows</button>
+                    </div>
+                    <div id="printerBluetoothHelp" class="hidden printerHelpPanel">
                         <p class="connectionHelp">Se a impressora usa Bluetooth, confira o pareamento nas configurações do Windows. Se usa USB, verifique o cabo. Depois procure novamente. Não é necessário reinstalar o iMenu.</p>
                         <div class="buttonRow">
                             <button class="soft" type="button" onclick="openBluetoothSettings()">Abrir Bluetooth do Windows</button>
@@ -1115,10 +1118,6 @@
                 <div class="buttonRow printerActions">
                     <button class="soft" type="button" onclick="detectPrinters()">Procurar novamente</button>
                     <button type="button" id="printerTestButton" onclick="testPrinter()">Testar impressão</button>
-                </div>
-                <div id="windowsPrintHint" class="hidden printerHelpPanel" role="status">
-                    <p class="connectionHelp">O teste não saiu? Experimente o modo Driver do Windows.</p>
-                    <button class="soft" type="button" onclick="tryWindowsDriver()">Experimentar Driver do Windows</button>
                 </div>
 
 
