@@ -296,6 +296,45 @@ test('saved virtual queues are retained without being suggested for new setups',
     assert.equal(context.readConfig().PRINTER_NAME, 'AnyDesk Printer')
 })
 
+test('ESC/POS preserves exact Windows queue names and receipt bytes', async t => {
+    const { context } = main(t)
+    const receipt = Buffer.from([0x1b, 0x40, 0x82, 0x0a, 0x1d, 0x56, 0x00])
+    const names = ['POS-80', 'Knup TÉRMICA', "\\\\servidor\\Cafe\u0301 d'Avó – 打印"]
+
+    for (const name of names) {
+        let calls = 0
+        context.mockExec = (command, _options, callback) => {
+            calls++
+            const [, scriptPath] = command.match(/-File "([^"]+)"/)
+            const contents = fs.readFileSync(scriptPath)
+            assert.deepEqual(contents.subarray(0, 3), Buffer.from([0xef, 0xbb, 0xbf]))
+            const script = contents.toString('utf8').slice(1)
+            const [, queueLiteral] = script.match(/^\$printerName = '(.*)'$/m)
+            assert.equal(queueLiteral.replaceAll("''", "'"), name)
+            assert.match(script, /EntryPoint="OpenPrinterW".*CharSet=CharSet.Unicode/)
+            assert.match(script, /OpenPrinter\(szPrinterName, out hPrinter,/)
+            assert.deepEqual(fs.readFileSync(scriptPath.replace(/\.ps1$/, '.bin')), receipt)
+
+            if (process.platform === 'win32') {
+                const parse = [
+                    '$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:IMENU_TEST_SCRIPT_PATH, [ref]$null, [ref]$null)',
+                    '$name = $ast.EndBlock.Statements[0].Right.Expression.Value',
+                    '[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($name))',
+                ].join('; ')
+                const encoded = Buffer.from(parse, 'utf16le').toString('base64')
+                const parsed = require('node:child_process').execFileSync('powershell.exe',
+                    ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+                    { env: { ...process.env, IMENU_TEST_SCRIPT_PATH: scriptPath }, encoding: 'utf8', timeout: 10000 })
+                assert.equal(Buffer.from(parsed.trim(), 'base64').toString('utf8'), name)
+            }
+
+            callback(null)
+        }
+        await context.printRaw(receipt, { PRINTER_MODE: 'usb', PRINTER_RENDER_MODE: 'escpos', PRINTER_NAME: name })
+        assert.equal(calls, 1)
+    }
+})
+
 test('Windows RAW helper rejects a nonexistent queue before sending anything', { skip: process.platform !== 'win32', timeout: 30000 }, async t => {
     const { context } = main(t)
     context.mockExec = require('node:child_process').exec

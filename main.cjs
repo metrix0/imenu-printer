@@ -1493,7 +1493,7 @@ public class RawPrinterHelper
         public string pDataType;
     }
 
-    [DllImport("winspool.Drv", EntryPoint="OpenPrinterA", SetLastError=true, CharSet=CharSet.Ansi, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]
+    [DllImport("winspool.Drv", EntryPoint="OpenPrinterW", SetLastError=true, CharSet=CharSet.Unicode, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]
     public static extern bool OpenPrinter(string szPrinter, out IntPtr hPrinter, IntPtr pd);
 
     [DllImport("winspool.Drv", EntryPoint="ClosePrinter", SetLastError=true, ExactSpelling=true, CallingConvention=CallingConvention.StdCall)]
@@ -1522,7 +1522,7 @@ public class RawPrinterHelper
         di.pDocName = "iMenu Pedido";
         di.pDataType = "RAW";
 
-        if (!OpenPrinter(szPrinterName.Normalize(), out hPrinter, IntPtr.Zero))
+        if (!OpenPrinter(szPrinterName, out hPrinter, IntPtr.Zero))
             return false;
 
         bool success = false;
@@ -1564,7 +1564,8 @@ if (-not $ok) {
 `
 
         const psPath = path.join(os.tmpdir(), `imenu_raw_print_${Date.now()}.ps1`)
-        fs.writeFileSync(psPath, ps, 'utf8')
+        // Windows PowerShell reads a script without a BOM using the system code page.
+        fs.writeFileSync(psPath, '\uFEFF' + ps, 'utf8')
 
         exec(
             `powershell -NoProfile -ExecutionPolicy Bypass -File "${psPath}"`,
