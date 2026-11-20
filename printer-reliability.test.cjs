@@ -313,12 +313,15 @@ test('ESC/POS preserves exact Windows queue names and receipt bytes', async t =>
             assert.equal(queueLiteral.replaceAll("''", "'"), name)
             assert.match(script, /EntryPoint="OpenPrinterW".*CharSet=CharSet.Unicode/)
             assert.match(script, /OpenPrinter\(szPrinterName, out hPrinter,/)
-            assert.deepEqual(fs.readFileSync(scriptPath.replace(/\.ps1$/, '.bin')), receipt)
+            const [, fileLiteral] = script.match(/^\$filePath = '(.*)'$/m)
+            assert.deepEqual(fs.readFileSync(fileLiteral.replaceAll("''", "'")), receipt)
 
             if (process.platform === 'win32') {
                 const parse = [
-                    '$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:IMENU_TEST_SCRIPT_PATH, [ref]$null, [ref]$null)',
-                    '$name = $ast.EndBlock.Statements[0].Right.Expression.Value',
+                    '$errors = $null',
+                    '$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:IMENU_TEST_SCRIPT_PATH, [ref]$null, [ref]$errors)',
+                    'if ($errors) { throw $errors[0].Message }',
+                    '$name = $ast.EndBlock.Statements[0].Find({ param($node) $node -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $false).Value',
                     '[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($name))',
                 ].join('; ')
                 const encoded = Buffer.from(parse, 'utf16le').toString('base64')
