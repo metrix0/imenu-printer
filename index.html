@@ -1022,7 +1022,7 @@
             </div>
 
             <div class="updateCard">
-                <p id="updateStatus" class="updateStatus">Atualizações automáticas ativadas.</p>
+                <p id="updateStatus" class="updateStatus">Verificação automática de atualizações ativada.</p>
                 <button id="updateCheckButton" class="updateCheckButton" type="button" onclick="handleUpdateAction()">
                     Verificar atualizações
                 </button>
@@ -1364,20 +1364,21 @@
             document.getElementById('sidebarBrandVersion').textContent = versionLabel
             document.getElementById('appVersionFooter').textContent = status.currentVersion
         }
-        label.textContent = status.message || 'Atualizações automáticas ativadas.'
+        label.textContent = status.message || 'Verificação automática de atualizações ativada.'
         if (button) {
-            button.textContent = status.status === 'ready'
+            button.textContent = status.status === 'available'
                 ? 'Clique aqui para atualizar'
                 : 'Verificar atualizações'
             button.disabled =
                 status.status === 'checking' ||
                 status.status === 'downloading' ||
+                status.status === 'waiting' ||
                 status.status === 'installing'
         }
     }
 
     async function handleUpdateAction() {
-        if (currentUpdateStatus?.status === 'ready') {
+        if (currentUpdateStatus?.status === 'available') {
             const result = await window.api.installUpdate()
             if (result?.status) updateUpdateStatus(result.status)
             return

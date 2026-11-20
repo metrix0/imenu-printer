@@ -65,6 +65,89 @@ test('updater waits for printing and prevents duplicate installer launches', asy
     assert.equal((await context.installPendingUpdate()).ok, false)
 })
 
+function updateReleaseFixture(t) {
+    const fixture = main(t)
+    const { context, run } = fixture
+    const installer = Buffer.alloc(1000001, 1)
+    const digest = require('node:crypto').createHash('sha256').update(installer).digest('hex')
+    const events = []
+    run('app.isPackaged = true')
+    context.refreshPrinterConnection = async () => {}
+    context.requestJson = async () => {
+        events.push('check')
+        return { tag_name: 'v1.5.0', assets: [{
+            name: 'iMenu-Impressora-Setup-1.5.0.exe', size: installer.length,
+            browser_download_url: 'https://example.test/installer.exe', digest: 'sha256:' + digest,
+        }] }
+    }
+    context.downloadUpdateFile = async (_url, file) => {
+        events.push('download')
+        fs.mkdirSync(path.dirname(file), { recursive: true })
+        fs.writeFileSync(file, installer)
+    }
+    context.mockSpawn = () => {
+        events.push('install')
+        const child = new EventEmitter()
+        child.unref = () => {}
+        queueMicrotask(() => child.emit('spawn'))
+        return child
+    }
+    context.setTimeout = () => {}
+    return { ...fixture, events }
+}
+
+test('manual check discovers the update and the second action downloads and installs once', async t => {
+    const { handlers, events } = updateReleaseFixture(t)
+    const available = await handlers['update:check']()
+    assert.equal(available.status, 'available')
+    assert.equal(available.availableVersion, '1.5.0')
+    assert.deepEqual(events, ['check'])
+
+    const installing = handlers['update:install']()
+    assert.equal((await handlers['update:install']()).ok, false)
+    assert.equal((await installing).status.status, 'installing')
+    assert.deepEqual(events, ['check', 'download', 'install'])
+})
+
+test('confirmed updates install automatically after current printing finishes', async t => {
+    const { context, handlers, events } = updateReleaseFixture(t)
+    let finishPrinting
+    context.printRaw = () => new Promise(resolve => { finishPrinting = resolve })
+    const printing = context.printConfiguredCopies('receipt', {})
+
+    await handlers['update:check']()
+    assert.equal((await handlers['update:install']()).status.status, 'waiting')
+    assert.deepEqual(events, ['check', 'download'])
+    assert.equal((await handlers['update:check']()).status, 'waiting')
+
+    finishPrinting()
+    await printing
+    assert.deepEqual(events, ['check', 'download', 'install'])
+})
+
+test('a failed download leaves the update available for a retry', async t => {
+    const { context, handlers, events } = updateReleaseFixture(t)
+    const download = context.downloadUpdateFile
+    context.downloadUpdateFile = async () => { throw new Error('Offline') }
+    await handlers['update:check']()
+    assert.equal((await handlers['update:install']()).status.status, 'available')
+    assert.deepEqual(events, ['check'])
+
+    context.downloadUpdateFile = download
+    assert.equal((await handlers['update:install']()).status.status, 'installing')
+    assert.deepEqual(events, ['check', 'download', 'install'])
+})
+
+test('a scheduled check still installs updates required by policy', async t => {
+    const { context, handlers, run, events } = updateReleaseFixture(t)
+    run("remoteUpdatePolicy = { forceUpdate: true, minimumVersion: '1.5.0' }")
+    assert.equal((await handlers['update:check']()).status, 'available')
+    assert.deepEqual(events, ['check'])
+
+    assert.equal((await context.checkForAppUpdate({ installRequired: true })).status, 'installing')
+    assert.deepEqual(events, ['check', 'check', 'download', 'install'])
+})
+
 test('installer never terminates its own process tree during an update', () => {
     const installer = fs.readFileSync(path.join(__dirname, 'build/installer.nsh'), 'utf8')
     assert.doesNotMatch(installer, /ExecToStack[^\n]*taskkill[^\n]*\s\/T\b/i)

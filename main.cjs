@@ -19,7 +19,7 @@ const PRINTER_CONFIG_URL = process.env.IMENU_PRINTER_CONFIG_URL || 'https://www.
 const connectionConfigPath = path.join(baseDir, 'connection-config.json')
 let connectionConfig = null
 let remoteUpdatePolicy = null
-let mandatoryUpdateWaiting = false
+let updateInstallRequested = false
 let activePrintOperations = 0
 let activePrinterCycle = false
 const PRINT_API_URL = process.env.IMENU_PRINTER_API_URL || 'https://www.imenuapp.com.br/api/printer'
@@ -65,6 +65,7 @@ const UPDATE_REPOSITORY = 'metrix0/imenu-printer'
 const SUPPORT_WHATSAPP_URL = 'https://wa.me/5519997235394?text=' + encodeURIComponent('Olá, preciso de ajuda com o iMenu Impressora!')
 
 let updateCheckInProgress = false
+let updateDownloadInProgress = false
 let pendingUpdate = null
 let updateInstallScheduled = false
 const receiptLogoCache = new Map()
@@ -74,7 +75,7 @@ let updateState = {
     currentVersion: app.getVersion(),
     availableVersion: null,
     progress: null,
-    message: 'Atualizações automáticas ativadas.',
+    message: 'Verificação automática de atualizações ativada.',
 }
 
 const ESC = {
@@ -289,9 +290,8 @@ async function verifyUpdateChecksum(filePath, digest) {
     return true
 }
 
-function installRequiredUpdateIfIdle() {
-    if (!mandatoryUpdateWaiting || activePrintOperations > 0 || activePrinterCycle ||
-        updateInstallScheduled || !pendingUpdate?.installerPath) return
+function installUpdateIfIdle() {
+    if (!updateInstallRequested || activePrintOperations > 0 || activePrinterCycle) return
     installPendingUpdate()
 }
 
@@ -371,7 +371,7 @@ function downloadUpdateFile(url, filePath, redirectCount = 0) {
     })
 }
 
-async function checkForAppUpdate() {
+async function checkForAppUpdate({ installRequired = false } = {}) {
     if (isLegacyBuild()) {
         return publishUpdateStatus({
             status: 'legacy',
@@ -390,7 +390,9 @@ async function checkForAppUpdate() {
         })
     }
 
-    if (updateCheckInProgress) return updateState
+    if (updateCheckInProgress || updateDownloadInProgress || updateInstallRequested || updateInstallScheduled) {
+        return updateState
+    }
     updateCheckInProgress = true
 
     publishUpdateStatus({
@@ -429,7 +431,6 @@ async function checkForAppUpdate() {
 
         const updateDir = path.join(baseDir, 'updates', version)
         const installerPath = path.join(updateDir, `iMenu-Impressora-${version}.exe`)
-        const expectedSize = Number(installer.size || 0)
         const mandatory = requiredPrinterUpdate()
         if (mandatory && compareVersions(version, remoteUpdatePolicy.minimumVersion) < 0) {
             throw new Error('Instalador anterior à versão mínima exigida.')
@@ -438,38 +439,15 @@ async function checkForAppUpdate() {
             throw new Error('Instalador obrigatório sem hash SHA-256 verificável.')
         }
 
-        publishUpdateStatus({
+        pendingUpdate = { version, installerPath, installer }
+        if (mandatory && installRequired) return (await downloadAndInstallUpdate()).status
+
+        return publishUpdateStatus({
             status: 'available',
             availableVersion: version,
-            progress: 0,
-            message: `Nova versão ${version} encontrada.`,
+            progress: null,
+            message: `Nova versão ${version} disponível.`,
         })
-
-        const existingSize = fs.existsSync(installerPath)
-            ? fs.statSync(installerPath).size
-            : 0
-
-        if (!expectedSize || existingSize !== expectedSize) {
-            publishUpdateStatus({
-                status: 'downloading',
-                availableVersion: version,
-                progress: 0,
-                message: 'Baixando atualização...',
-            })
-            await downloadUpdateFile(installer.browser_download_url, installerPath)
-        }
-
-        await verifyUpdateChecksum(installerPath, installer.digest)
-        pendingUpdate = { version, installerPath }
-        mandatoryUpdateWaiting = mandatory
-        const ready = publishUpdateStatus({
-            status: 'ready',
-            availableVersion: version,
-            progress: 100,
-            message: mandatory ? 'Atualização obrigatória pronta. Instalando quando a impressora estiver livre...' : `Versão ${version} pronta.`,
-        })
-        installRequiredUpdateIfIdle()
-        return ready
     } catch (error) {
         return publishUpdateStatus({
             status: 'error',
@@ -481,12 +459,50 @@ async function checkForAppUpdate() {
     }
 }
 
-async function installPendingUpdate() {
-    if (activePrinterCycle || activePrintOperations > 0) {
-        return { ok: false, status: publishUpdateStatus({ status: 'ready', message: 'Aguardando terminar a impressão em andamento.' }) }
+async function downloadAndInstallUpdate() {
+    if (updateDownloadInProgress || updateInstallRequested || updateInstallScheduled || !pendingUpdate?.installer) {
+        return { ok: false, status: updateState }
     }
+
+    const { version, installerPath, installer } = pendingUpdate
+    updateDownloadInProgress = true
+
+    try {
+        const installerCached = fs.existsSync(installerPath) &&
+            fs.statSync(installerPath).size === Number(installer.size)
+        publishUpdateStatus({
+            status: 'downloading',
+            availableVersion: version,
+            progress: 0,
+            message: installerCached ? 'Preparando atualização...' : 'Baixando atualização...',
+        })
+        if (!installerCached) {
+            await downloadUpdateFile(installer.browser_download_url, installerPath)
+        }
+
+        await verifyUpdateChecksum(installerPath, installer.digest)
+        return await installPendingUpdate()
+    } catch (error) {
+        return {
+            ok: false,
+            status: publishUpdateStatus({
+                status: 'available',
+                progress: null,
+                message: requiredPrinterUpdate()
+                    ? 'Atualização obrigatória indisponível. A impressão continuará funcionando.'
+                    : 'Não foi possível baixar ou verificar a atualização. Tente novamente.',
+            }),
+        }
+    } finally {
+        updateDownloadInProgress = false
+    }
+}
+
+async function installPendingUpdate() {
+    if (updateInstallScheduled) return { ok: false, status: updateState }
+
+    updateInstallRequested = false
     if (
-        updateInstallScheduled ||
         isLegacyBuild() ||
         !app.isPackaged ||
         !pendingUpdate?.installerPath ||
@@ -495,9 +511,21 @@ async function installPendingUpdate() {
         return {
             ok: false,
             status: publishUpdateStatus({
-                status: 'error',
+                status: pendingUpdate?.installer ? 'available' : 'error',
                 progress: null,
                 message: 'A atualização ainda não está pronta.',
+            }),
+        }
+    }
+
+    if (activePrinterCycle || activePrintOperations > 0) {
+        updateInstallRequested = true
+        return {
+            ok: false,
+            status: publishUpdateStatus({
+                status: 'waiting',
+                progress: 100,
+                message: 'Aguardando terminar a impressão em andamento...',
             }),
         }
     }
@@ -536,10 +564,11 @@ async function installPendingUpdate() {
         return { ok: true, status }
     } catch (error) {
         updateInstallScheduled = false
+        wakePrinter()
         return {
             ok: false,
             status: publishUpdateStatus({
-                status: 'error',
+                status: 'available',
                 progress: null,
                 message: 'Não foi possível iniciar a atualização.',
             }),
@@ -551,12 +580,12 @@ function scheduleUpdateChecks() {
     if (isLegacyBuild() || !app.isPackaged) return
 
     const initialTimer = setTimeout(() => {
-        checkForAppUpdate().catch(() => {})
+        checkForAppUpdate({ installRequired: true }).catch(() => {})
     }, UPDATE_INITIAL_DELAY_MS)
     initialTimer.unref?.()
 
     const interval = setInterval(() => {
-        checkForAppUpdate().catch(() => {})
+        checkForAppUpdate({ installRequired: true }).catch(() => {})
     }, UPDATE_CHECK_INTERVAL_MS)
     interval.unref?.()
 }
@@ -1317,7 +1346,7 @@ async function printConfiguredCopies(receipts, config) {
     }
     } finally {
         activePrintOperations -= 1
-        installRequiredUpdateIfIdle()
+        installUpdateIfIdle()
     }
 }
 function isWindowsDriver(config) {
@@ -2349,6 +2378,10 @@ async function startPrinterLoop() {
 
     let lastPrinterProblem = ''
     while (!stopPrinterLoop) {
+        if (updateInstallScheduled) {
+            await waitForPrinterWake(60000)
+            continue
+        }
         activePrinterCycle = true
         let job = null
         let attempt = null
@@ -2475,7 +2508,7 @@ async function startPrinterLoop() {
             if (!err?.printerUnavailable || job) sendLog(`Erro: ${err.message}`)
         } finally {
             activePrinterCycle = false
-            installRequiredUpdateIfIdle()
+            installUpdateIfIdle()
         }
 
         if (retryDelayMs !== null) {
@@ -2938,7 +2971,8 @@ ipcMain.handle('update:check', async () => {
 })
 
 ipcMain.handle('update:install', () => {
-    return installPendingUpdate()
+    if (updateCheckInProgress) return { ok: false, status: updateState }
+    return downloadAndInstallUpdate()
 })
 
 ipcMain.handle('support:open', async () => {
