@@ -1612,6 +1612,8 @@ if (-not $ok) {
                     // A failed/terminated helper may already have written data.
                     // Only an explicit pre-write failure is safe to retry.
                     err.printRetryable = !err.killed && /IMENU_PRINT_NOT_SENT:/.test(String(stderr || err.message))
+                    const diagnostic = String(stderr || _stdout || '').trim()
+                    if (diagnostic) err.message = `PowerShell: ${diagnostic}`.slice(0, 400)
                     reject(err)
                 } else {
                     resolve()

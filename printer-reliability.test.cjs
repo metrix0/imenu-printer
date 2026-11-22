@@ -476,6 +476,30 @@ test('confirmed USB pre-send failures remain retryable', async t => {
         error => error.printRetryable === true)
 })
 
+test('USB failures capture bounded PowerShell details without changing retry safety', async t => {
+    const { context } = main(t)
+    const config = { PRINTER_NAME: 'POS-80' }
+    context.mockExec = (_command, _options, callback) =>
+        callback(new Error('Command failed: powershell'), '',
+            'IMENU_PRINT_NOT_SENT: fila indisponível ' + 'x'.repeat(500))
+    await assert.rejects(context.printUsb(Buffer.from('receipt'), config),
+        error => error.printRetryable === true &&
+            error.message.startsWith('PowerShell: IMENU_PRINT_NOT_SENT:') &&
+            error.message.length === 400)
+
+    context.mockExec = (_command, _options, callback) =>
+        callback(new Error('Command failed: powershell'), '', 'WritePrinter failed')
+    await assert.rejects(context.printUsb(Buffer.from('receipt'), config),
+        error => error.printRetryable === false &&
+            error.message === 'PowerShell: WritePrinter failed')
+
+    context.mockExec = (_command, _options, callback) =>
+        callback(new Error('Command failed: powershell'), '', '')
+    await assert.rejects(context.printUsb(Buffer.from('receipt'), config),
+        error => error.printRetryable === false &&
+            error.message === 'Command failed: powershell')
+})
+
 test('printer configuration persists without changing receipt preferences or login', async t => {
     const { context, handlers } = main(t)
     context.saveConfig({ RESTAURANT_ID: 'r1', PRINTER_MODE: 'usb', PRINTER_NAME: 'POS-80',
