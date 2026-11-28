@@ -5,6 +5,7 @@ const path = require('node:path')
 const vm = require('node:vm')
 const { test } = require('node:test')
 const { EventEmitter } = require('node:events')
+const iconv = require('iconv-lite')
 
 const mainSource = fs.readFileSync(path.join(__dirname, 'main.cjs'), 'utf8')
 const rendererSource = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8')
@@ -171,7 +172,7 @@ function main(t, overrides = {}) {
             if (name === 'ws') return class {}
             if (name === 'serialport') return { SerialPort: overrides.SerialPort || { list: async () => [] } }
             if (name === '@supabase/supabase-js') return { createClient() {} }
-            if (name === 'iconv-lite') return { encode: value => Buffer.from(value) }
+            if (name === 'iconv-lite') return iconv
             if (name === 'child_process') return { ...require(name),
                 exec: (...args) => context.mockExec(...args),
                 execFile: (...args) => context.mockExecFile(...args),
@@ -736,6 +737,145 @@ test('driver receipts reuse each copy’s configured logo without exposing local
     assert.ok(second.indexOf('<img') > second.indexOf('SECOND'))
     assert.match(second, /width:10mm/)
     assert.doesNotMatch(first + second, /C:\\/)
+})
+
+function decodePortableReceipt(bytes) {
+    const lines = []
+    const logoBands = []
+    const currentLine = []
+    let style = 0
+    let spacing = null
+    for (let offset = 0; offset < bytes.length;) {
+        const byte = bytes[offset++]
+        if (byte === 0x0a) {
+            lines.push({ text: iconv.decode(Buffer.from(currentLine), 'cp850'), style })
+            currentLine.length = 0
+        } else if (byte === 0x1b) {
+            const command = bytes[offset++]
+            switch (command) {
+                case 0x40: break
+                case 0x74: assert.equal(bytes[offset++], 2); break
+                case 0x21: style = bytes[offset++]; break
+                case 0x32: spacing = null; break
+                case 0x33: spacing = bytes[offset++]; break
+                case 0x2a: {
+                    assert.equal(spacing, 24)
+                    assert.equal(bytes[offset++], 33)
+                    const columns = bytes.readUInt16LE(offset)
+                    offset += 2
+                    logoBands.push(bytes.subarray(offset, offset + columns * 3))
+                    offset += columns * 3
+                    assert.equal(bytes[offset++], 0x0a)
+                    break
+                }
+                case 0x64:
+                    assert.equal(currentLine.length, 0)
+                    assert.equal(bytes[offset++], 4)
+                    assert.equal(offset, bytes.length)
+                    return { lines, logoBands }
+                default: assert.fail('Unexpected ESC/POS command: ' + command)
+            }
+        } else {
+            currentLine.push(byte)
+        }
+    }
+    assert.fail('Receipt must end with paper feed')
+}
+
+const portableOrder = {
+    order: {
+        display_id: 9, is_delivery: 'retirada', customer_name: 'João',
+        created_at: '2026-11-27T14:51:00Z', subtotal_cents: 2000, total_cents: 2000,
+        payment_method: 'Débito (Na retirada)',
+    },
+    items: [{ id: 'i1', quantity: 1, name: 'Pão de Alho com Linguiça', total_cents: 2000 }],
+    subitems: [],
+}
+
+test('portable ESC/POS renders two accented and formatted copies on 58 mm', async t => {
+    const columns = 32
+    const { context } = main(t)
+    context.loadMonochromeReceiptLogo = () => {
+        const bitmap = Buffer.alloc(9 * 25 * 4, 255)
+        bitmap[0] = 0
+        bitmap[((24 * 9) + 8) * 4] = 0
+        return { width: 9, height: 25, bitmap }
+    }
+    const config = {
+        PRINTER_MODE: 'usb', PRINTER_NAME: 'Lintian LT8350', PRINTER_RENDER_MODE: 'escpos',
+        RECEIPT_PAPER_WIDTH: '58', RECEIPT_FOOTER_TEXT: 'Pão & Alho',
+        PRINT_TWO_COPIES: true, RECEIPT_TITLE: 'COZINHA', RECEIPT_2_TITLE: 'ENTREGA',
+        RECEIPT_SHOW_LOGO: true, RECEIPT_LOGO_PATH: 'receipt-logo.png',
+        RECEIPT_2_LOGO_POSITION: 'bottom',
+    }
+    context.printerApi = async () => portableOrder
+    context.sleep = async () => {}
+    const sent = []
+    context.printUsb = async bytes => { sent.push(bytes) }
+    await context.printConfiguredCopies(await context.buildConfiguredReceipts(null, 'o1', config), config)
+    assert.equal(sent.length, 2)
+
+    for (const [index, bytes] of sent.entries()) {
+        const logoOffset = bytes.indexOf(Buffer.from([0x1b, 0x2a, 33]))
+        assert.ok(index === 0 ? logoOffset < bytes.indexOf('COZINHA') : logoOffset > bytes.indexOf('11:51'))
+        const { lines, logoBands } = decodePortableReceipt(bytes)
+        const title = index === 0 ? 'COZINHA' : 'ENTREGA'
+        assert.deepEqual(lines[0], { text: ' '.repeat(Math.floor((columns - title.length) / 2)) + title, style: 0x08 })
+        assert.deepEqual(lines[1], { text: '', style: 0x08 })
+        assert.deepEqual(lines[2], { text: ' '.repeat(Math.floor((columns / 2 - 9) / 2)) + 'PEDIDO #9', style: 0x38 })
+        assert.ok(lines.some(line => line.text === 'João' && line.style === 0x18))
+        assert.ok(lines.some(line => line.text.startsWith('1x Pão de Alho com Linguiça') && line.style === 0x18))
+        assert.ok(lines.some(line => line.text.trimStart() === '27/11/2026 às 11:51'))
+        for (const label of ['Subtotal', 'Débito (Na retirada)']) {
+            const line = lines.find(line => line.text.startsWith(label))
+            assert.equal(line.text.length, columns - 1)
+            assert.ok(line.text.endsWith('R$ 20,00'))
+        }
+        const left = Math.floor((columns * 12 - 9) / 2)
+        assert.equal(logoBands.length, 2)
+        assert.equal(logoBands[0][left * 3], 0x80)
+        assert.equal(logoBands[1][(left + 8) * 3], 0x80)
+    }
+})
+
+test('portable ESC/POS is limited to the selected printer’s reported identity', async t => {
+    const { context } = main(t)
+    context.listWindowsPrinters = async () => [
+        { name: 'Receipt 58', driverName: 'Lintian LT-8350' },
+        { name: 'Receipt 80', driverName: 'Generic Thermal' },
+    ]
+    const config = { PRINTER_MODE: 'usb', PRINTER_NAME: 'Receipt 58', PRINTER_RENDER_MODE: 'escpos' }
+    await context.checkPrinterAvailability(config)
+    assert.ok(Buffer.isBuffer(await context.buildReceipt(null, 'o1', config, 1, portableOrder)))
+
+    const other = { ...config, PRINTER_NAME: 'Receipt 80' }
+    const receipt = await context.buildReceipt(null, 'o1', other, 1, portableOrder)
+    assert.equal(typeof receipt, 'string')
+    assert.ok(receipt.startsWith(context.printerStart()))
+    assert.ok(context.encodePrinterData(receipt).includes('Pao de Alho com Linguica'))
+    assert.ok(context.encodePrinterData(receipt).includes(Buffer.from([0x1d, 0x56, 0x41, 0x10])))
+
+    const paper80 = { ...config, RECEIPT_PAPER_WIDTH: '80' }
+    assert.equal(
+        await context.buildReceipt(null, 'o1', paper80, 1, portableOrder),
+        await context.buildReceipt(null, 'o1', { ...paper80, PRINTER_NAME: other.PRINTER_NAME }, 1, portableOrder)
+    )
+
+    context.listComPorts = async () => [{ path: 'COM7', friendlyName: 'LT8350' }, { path: 'COM8' }]
+    const bluetooth = { PRINTER_MODE: 'bluetooth', PRINTER_COM_PORT: 'COM7' }
+    await context.checkPrinterAvailability(bluetooth)
+    assert.ok(context.usesPortableEscPos(bluetooth))
+    assert.ok(!context.usesPortableEscPos({ ...bluetooth, PRINTER_COM_PORT: 'COM8' }))
+})
+
+test('portable ESC/POS preserves the configured gaps between sections', async t => {
+    const { context } = main(t)
+    const config = { PRINTER_MODE: 'usb', PRINTER_NAME: 'Lintian', RECEIPT_TITLE: 'COZINHA' }
+    for (const [spacing, blankLines] of [['compact', 0], ['normal', 1], ['spacious', 2]]) {
+        const receipt = await context.buildReceipt(null, 'o1', { ...config, RECEIPT_SPACING: spacing }, 1, portableOrder)
+        const { lines } = decodePortableReceipt(receipt)
+        assert.equal(lines.findIndex(line => line.text.includes('PEDIDO')), blankLines + 1)
+    }
 })
 
 

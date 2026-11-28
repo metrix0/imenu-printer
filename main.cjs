@@ -844,6 +844,22 @@ function normalizeComPortName(value) {
         .toUpperCase()
 }
 
+function printerRouteKey(config) {
+    return JSON.stringify([config.PRINTER_MODE, config.PRINTER_NAME, config.PRINTER_COM_PORT,
+        config.PRINTER_IP, config.PRINTER_PORT])
+}
+
+function isLintianPrinter(...names) {
+    return names.some(name => /\b(?:lintian|lt[- ]?8350)\b/i.test(String(name || '')))
+}
+
+function usesPortableEscPos(config) {
+    if (isWindowsDriver(config) || normalizeReceiptPaperWidth(config.RECEIPT_PAPER_WIDTH) !== '58') return false
+    if (config.PRINTER_MODE === 'usb' && isLintianPrinter(config.PRINTER_NAME)) return true
+    return printerAvailabilityCache?.key === printerRouteKey(config) &&
+        printerAvailabilityCache.portableEscPos
+}
+
 
 function runPrinterDiscoveryCommand(script) {
     return new Promise(resolve => {
@@ -860,7 +876,7 @@ function decodeWindowsName(encoded) {
 
 function listWindowsPrintersPrimary() {
     return new Promise(resolve => {
-        const cmd = 'powershell -NoProfile -Command "Get-Printer | Select-Object Name,PortName | ConvertTo-Json -Compress"'
+        const cmd = 'powershell -NoProfile -Command "Get-Printer | Select-Object Name,PortName,DriverName | ConvertTo-Json -Compress"'
 
         exec(cmd, { timeout: 10000, windowsHide: true, maxBuffer: 256 * 1024 }, (err, stdout) => {
             if (err) {
@@ -882,6 +898,7 @@ function listWindowsPrintersPrimary() {
                     .map(printer => ({
                         name: String(printer.Name || '').trim(),
                         portName: String(printer.PortName || '').trim(),
+                        driverName: String(printer.DriverName || '').trim(),
                         type: 'windows-printer',
                     }))
                     .filter(printer => printer.name))
@@ -1122,24 +1139,28 @@ function validatePrinterConfiguration(config) {
 
 async function checkPrinterAvailability(config) {
     validatePrinterConfiguration(config)
-    const key = JSON.stringify([config.PRINTER_MODE, config.PRINTER_NAME, config.PRINTER_COM_PORT,
-        config.PRINTER_IP, config.PRINTER_PORT])
+    const key = printerRouteKey(config)
     if (printerAvailabilityCache?.key === key && Date.now() - printerAvailabilityCache.checkedAt < 15000) return
+    let portableEscPos = false
     if (config.PRINTER_MODE === 'usb') {
         const printers = await listWindowsPrinters()
+        const selected = printers.find(printer => printer.name === config.PRINTER_NAME)
         // Enumeration may be unavailable on older Windows installations. Keep
         // their saved route usable and let the existing transport report errors.
-        if (printers.length && !printers.some(printer => printer.name === config.PRINTER_NAME)) {
+        if (printers.length && !selected) {
             throw printerSetupError('A impressora salva não foi encontrada no Windows. Confira a conexão e clique em Procurar novamente.')
         }
+        portableEscPos = isLintianPrinter(selected?.driverName)
     } else if (config.PRINTER_MODE === 'bluetooth') {
         const ports = await listComPorts().catch(() => null)
-        if (ports && !ports.some(port => normalizeComPortName(port.path) === normalizeComPortName(config.PRINTER_COM_PORT))) {
+        const selected = ports?.find(port => normalizeComPortName(port.path) === normalizeComPortName(config.PRINTER_COM_PORT))
+        if (ports && !selected) {
             throw printerSetupError('A conexão Bluetooth salva está indisponível. Confira o pareamento no Windows e clique em Procurar novamente.')
         }
+        portableEscPos = isLintianPrinter(selected?.friendlyName, selected?.manufacturer)
     }
     // Do not start a Windows discovery process for every receipt in a backlog.
-    printerAvailabilityCache = { key, checkedAt: Date.now() }
+    printerAvailabilityCache = { key, checkedAt: Date.now(), portableEscPos }
 }
 
 function normalizePrinterText(text) {
@@ -1241,9 +1262,10 @@ function loadMonochromeReceiptLogo(imagePath, logoSize = 'large') {
     return processed
 }
 
-function createReceiptLogoRasterBuffer(imagePath, logoSize = 'large') {
+function createReceiptLogoRasterBuffer(imagePath, logoSize = 'large', portableColumns = 0) {
     const processed = loadMonochromeReceiptLogo(imagePath, logoSize)
     if (!processed) return null
+    if (portableColumns) return createPortableLogoBuffer(processed, portableColumns * 12)
 
     const rowBytes = Math.ceil(processed.width / 8)
     const raster = Buffer.alloc(rowBytes * processed.height)
@@ -1275,7 +1297,29 @@ function createReceiptLogoRasterBuffer(imagePath, logoSize = 'large') {
     ])
 }
 
-function createReceiptLogoBuffer(config, via) {
+function createPortableLogoBuffer({ width, height, bitmap }, printableDots) {
+    // ESC * prints 24-dot bands. Blank columns center the image without ESC a.
+    const left = Math.floor((printableDots - width) / 2)
+    const columns = left + width
+    const header = Buffer.from([0x1b, 0x2a, 33, columns & 0xff, columns >> 8])
+    const newline = Buffer.from([0x0a])
+    const bands = [Buffer.from([0x1b, 0x33, 24])]
+    for (let top = 0; top < height; top += 24) {
+        const band = Buffer.alloc(columns * 3)
+        for (let y = 0; y < Math.min(24, height - top); y += 1) {
+            for (let x = 0; x < width; x += 1) {
+                if (bitmap[((top + y) * width + x) * 4] < 128) {
+                    band[(left + x) * 3 + (y >> 3)] |= 0x80 >> (y % 8)
+                }
+            }
+        }
+        bands.push(header, band, newline)
+    }
+    bands.push(Buffer.from([0x1b, 0x32]))
+    return Buffer.concat(bands)
+}
+
+function createReceiptLogoBuffer(config, via, portableColumns) {
     const enabled = getReceiptLogoSetting(config, via, 'SHOW_LOGO', false) === true
     if (!enabled) return null
 
@@ -1286,7 +1330,7 @@ function createReceiptLogoBuffer(config, via) {
         getReceiptLogoSetting(config, via, 'LOGO_SIZE', 'large')
     )
 
-    return createReceiptLogoRasterBuffer(imagePath, logoSize)
+    return createReceiptLogoRasterBuffer(imagePath, logoSize, portableColumns)
 }
 
 function getReceiptLogoPreviewPayload(imagePath) {
@@ -2005,7 +2049,64 @@ function receiptSectionGap(spacing) {
     return ''
 }
 
-async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via = 1, receiptData = null) {
+function renderPortableEscPosReceipt(text, config, via, columns) {
+    // The shared receipt layout emits these controls between lines. Translate
+    // them to ESC ! styles and center text by column on portable firmware.
+    const styleBits = {
+        [ESC.normalSize]: 0,
+        [ESC.doubleHeight]: 0x10,
+        [ESC.doubleSize]: 0x30,
+    }
+    const controls = /\x1b(?:a[\x00\x01]|E[\x00\x01])|\x1d![\x00\x10\x11]/g
+    let bold = 0
+    let size = 0
+    let centered = false
+    let activeStyle = 0
+    // Select PC850 after reset and omit device-specific density commands.
+    const body = [Buffer.from(ESC.init + '\x1b\x74\x02\x1b\x32', 'ascii')]
+    const logo = via && createReceiptLogoBuffer(config, via, columns)
+    const logoAtBottom = logo && normalizeReceiptLogoPosition(
+        getReceiptLogoSetting(config, via, 'LOGO_POSITION', 'top')
+    ) === 'bottom'
+    if (logo && !logoAtBottom) body.push(logo)
+
+    const lines = text.slice(printerStart().length).split('\n')
+    lines.pop() // The suffix after the last newline contains only style resets.
+    const newline = Buffer.from([0x0a])
+    for (const line of lines) {
+        const value = line.replace(controls, command => {
+            if (command === ESC.alignCenter || command === ESC.alignLeft) {
+                centered = command === ESC.alignCenter
+            } else if (command === ESC.boldOn || command === ESC.boldOff) {
+                bold = command === ESC.boldOn ? 0x08 : 0
+            } else {
+                size = styleBits[command]
+            }
+            return ''
+        }).replace(/[\x00-\x1f\x7f]/g, ' ').normalize('NFC')
+        if (value) {
+            const style = bold | size
+            if (style !== activeStyle) {
+                body.push(Buffer.from([0x1b, 0x21, style]))
+                activeStyle = style
+            }
+            const encoded = iconv.encode(value, 'cp850')
+            const lineColumns = size === 0x30 ? Math.floor(columns / 2) : columns
+            const padding = Math.floor((lineColumns - encoded.length) / 2)
+            if (centered && padding > 0) body.push(Buffer.alloc(padding, 0x20))
+            body.push(encoded)
+        }
+        body.push(newline)
+    }
+    if (activeStyle) body.push(Buffer.from([0x1b, 0x21, 0]))
+    if (logoAtBottom) body.push(logo)
+    // Feed to the tear bar independently of cutter support.
+    body.push(Buffer.from([0x1b, 0x64, 4]))
+    return Buffer.concat(body)
+}
+
+async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via = 1, receiptData = null,
+    portableEscPos = usesPortableEscPos(receiptConfig)) {
     const receiptSetting = (suffix, fallback) => {
         const primaryKey = `RECEIPT_${suffix}`
         const viaKey = `RECEIPT_2_${suffix}`
@@ -2048,8 +2149,11 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
     const paperWidth = normalizeReceiptPaperWidth(
         receiptConfig.RECEIPT_PAPER_WIDTH
     )
+    const portableColumns = portableEscPos ? receiptPaperColumns(paperWidth) : 0
     const paperColumns = isWindowsDriver(receiptConfig)
-        ? windowsPaperColumns(receiptConfig) : receiptPaperColumns(paperWidth)
+        ? windowsPaperColumns(receiptConfig)
+        // Keep padded price rows and rules short of the automatic line wrap.
+        : portableColumns ? portableColumns - 1 : receiptPaperColumns(paperWidth)
     const textSize = normalizeReceiptTextSize(
         receiptSetting('TEXT_SIZE', 'normal'),
         'normal'
@@ -2291,6 +2395,7 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
     }
 
     if (isWindowsDriver(receiptConfig)) return renderWindowsReceipt(text, receiptConfig, via)
+    if (portableColumns) return renderPortableEscPosReceipt(text, receiptConfig, via, portableColumns)
 
     const ending = '\n\n\n' + ESC.cut
     const logoBuffer = createReceiptLogoBuffer(receiptConfig, via)
@@ -2320,14 +2425,15 @@ async function buildReceipt(supabase, orderId, receiptConfig = readConfig(), via
 }
 
 async function buildConfiguredReceipts(supabase, orderId, config) {
+    const portableEscPos = usesPortableEscPos(config)
     const receiptData = await printerApi('receipt', { order_id: orderId })
-    const firstReceipt = await buildReceipt(null, orderId, config, 1, receiptData)
+    const firstReceipt = await buildReceipt(null, orderId, config, 1, receiptData, portableEscPos)
 
     if (getPrintCopies(config) !== 2) {
         return [firstReceipt]
     }
 
-    const secondReceipt = await buildReceipt(null, orderId, config, 2, receiptData)
+    const secondReceipt = await buildReceipt(null, orderId, config, 2, receiptData, portableEscPos)
     return [firstReceipt, secondReceipt]
 }
 
@@ -2551,10 +2657,21 @@ async function testPrint(config) {
         'TESTE IMENU\n' +
         ESC.boldOff +
         `Modo: ${isWindowsDriver(config) ? 'Driver do Windows' : config.PRINTER_MODE}\n` +
-        `Hora: ${new Date().toLocaleString('pt-BR')}\n\n\n` +
-        ESC.cut
+        `Hora: ${new Date().toLocaleString('pt-BR')}\n`
 
-    const receipt = isWindowsDriver(config) ? renderWindowsReceipt(text, config) : text
+    const legacyReceipt = text + '\n\n' + ESC.cut
+    let receipt = legacyReceipt
+    if (isWindowsDriver(config)) {
+        receipt = renderWindowsReceipt(legacyReceipt, config)
+    } else {
+        // Discovery identifies the firmware when available. The transport
+        // still handles errors for printers that cannot be enumerated.
+        await checkPrinterAvailability(config).catch(() => {})
+        if (usesPortableEscPos(config)) {
+            const columns = receiptPaperColumns(config.RECEIPT_PAPER_WIDTH)
+            receipt = renderPortableEscPosReceipt(text, config, 1, columns)
+        }
+    }
     await printConfiguredCopies(receipt, config)
 }
 
